@@ -73,12 +73,31 @@ def get_existing_tags():
     return {}
 
 
-def create_tag(tag_name):
+def get_existing_tag_id(tag_name, existing_tags):
+    """Find a tag ID in a case-insensitive way"""
+    return next((tid for name, tid in existing_tags.items() if name.lower() == tag_name.lower()), None)
+
+
+def create_tag(tag_name, existing_tags):
     """Create a tag if it doesn't exist and return its ID"""
     tag_name = tag_name.lower().strip()
+
+    # Check if the tag already exists
+    existing_tag_id = get_existing_tag_id(tag_name, existing_tags)
+    if existing_tag_id:
+        return existing_tag_id  # Use the existing tag
+
+    # Create the tag if it doesn't exist
     response = requests.post(f"{BASE_API_URL}/tags/", headers=HEADERS, json={"name": tag_name})
+
     if response.status_code in [200, 201]:
-        return response.json()["id"]
+        tag_id = response.json()["id"]
+        existing_tags[tag_name] = tag_id  # Update local cache
+        return tag_id
+    elif response.status_code == 400 and "unique constraint" in response.text.lower():
+        log_message(f"⚠️ Tag '{tag_name}' already exists but may belong to another owner.")
+        return get_existing_tag_id(tag_name, existing_tags)  # Return best match
+
     log_message(f"⚠️ Failed to create tag '{tag_name}': {response.text}")
     return None
 
@@ -111,15 +130,10 @@ def get_tags_from_path(file_path, existing_tags):
         for sub_tag in sub_tags:
             sub_tag = sub_tag.lower()
 
-            # Check if tag exists in a case-insensitive way
-            existing_tag_id = next((tid for name, tid in existing_tags.items() if name.lower() == sub_tag), None)
-            if existing_tag_id:
-                tag_ids.append(existing_tag_id)
-            else:
-                new_tag_id = create_tag(sub_tag)
-                if new_tag_id:
-                    existing_tags[sub_tag] = new_tag_id
-                    tag_ids.append(new_tag_id)
+            # Get existing tag ID or create if necessary
+            tag_id = get_existing_tag_id(sub_tag, existing_tags) or create_tag(sub_tag, existing_tags)
+            if tag_id:
+                tag_ids.append(tag_id)
 
     return tag_ids
 
