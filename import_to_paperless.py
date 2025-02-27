@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import datetime
 import hvac
 import requests
 
@@ -10,12 +11,24 @@ from config_vault import vault_addr, vault_role_id, vault_secret_id
 
 # Paperless-NGX API configuration
 BASE_API_URL = "http://10.40.10.10:8010/api"
-WATCH_DIR = "Z:\\factures\\Amazon"
+WATCH_DIR = "Z:\\factures\\Castorama"
 IGNORED_PATHS = [
     "Z:\\",
     "/mnt/"
 ]
 
+# Store submitted tasks for batch checking later
+submitted_tasks = {}
+
+
+# Logging helper function
+def log_message(message):
+    """Print messages with a timestamp."""
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{timestamp}] {message}")
+
+
+# Vault authentication to get Paperless API token
 def get_token_from_vault(vault_addr, role_id, secret_id, secret_path, secret_key):
     """Retrieve API token from HashiCorp Vault"""
     try:
@@ -23,7 +36,7 @@ def get_token_from_vault(vault_addr, role_id, secret_id, secret_path, secret_key
         client.auth.approle.login(role_id=role_id, secret_id=secret_id)
 
         if not client.is_authenticated():
-            print("❌ Vault authentication failed!")
+            log_message("❌ Vault authentication failed!")
             return None
 
         mount_point, secret_path = secret_path.split('/', 1)
@@ -31,7 +44,7 @@ def get_token_from_vault(vault_addr, role_id, secret_id, secret_path, secret_key
         return read_response['data']['data'].get(secret_key, None)
 
     except Exception as e:
-        print(f"❌ Error accessing Vault: {e}")
+        log_message(f"❌ Error accessing Vault: {e}")
         return None
 
 
@@ -50,62 +63,59 @@ HEADERS = {
 }
 
 
+# Retrieve existing tags
 def get_existing_tags():
     """Retrieve all existing tags and return a dictionary {lowercase name: id}"""
     response = requests.get(f"{BASE_API_URL}/tags/", headers=HEADERS)
 
     if response.status_code == 200:
         try:
-            data = response.json()  # Parse JSON response
-            tag_dict = {tag["name"].lower(): tag["id"] for tag in data.get("results", [])}  # Extract tags correctly
-            return tag_dict
+            data = response.json()
+            return {tag["name"].lower(): tag["id"] for tag in data.get("results", [])}
         except Exception as e:
-            print(f"⚠️ Error parsing tags response: {e}")
+            log_message(f"⚠️ Error parsing tags response: {e}")
             return {}
 
-    print(f"⚠️ Failed to fetch tags: {response.text}")
+    log_message(f"⚠️ Failed to fetch tags: {response.text}")
     return {}
 
 
+# Create a new tag
 def create_tag(tag_name):
     """Create a tag if it doesn't exist and return its ID"""
-    tag_name = tag_name.lower().strip()  # Normalize to lowercase
+    tag_name = tag_name.lower().strip()
     response = requests.post(f"{BASE_API_URL}/tags/", headers=HEADERS, json={"name": tag_name})
 
-    if response.status_code == 201:  # Successfully created
+    if response.status_code in [200, 201]:  # Created or already exists
         return response.json()["id"]
-    elif response.status_code == 200:  # Tag already exists (rare case)
-        return response.json()["id"]
-    else:
-        print(f"⚠️ Failed to create tag '{tag_name}': {response.text}")
-        return None
 
+    log_message(f"⚠️ Failed to create tag '{tag_name}': {response.text}")
+    return None
+
+
+# Extract relevant tags from the file path
 def get_tags_from_path(file_path, existing_tags):
     """Extract relevant folder names from the file path and convert them to tag IDs."""
-    # Normalize path and exclude ignored prefixes
     normalized_path = os.path.normpath(file_path)
 
-    # Find the longest ignored path that matches the beginning of this file path
+    # Remove ignored prefixes
     for ignored in IGNORED_PATHS:
         normalized_ignored = os.path.normpath(ignored)
         if normalized_path.startswith(normalized_ignored):
-            # Remove the ignored prefix from the path
             normalized_path = normalized_path[len(normalized_ignored):]
-            break  # Stop after the first match
+            break
 
     # Extract only the directory path (exclude filename)
     parent_directory = os.path.dirname(normalized_path)
-
-    # Extract the remaining directories for tagging
     folder_names = parent_directory.split(os.sep)
     tag_ids = []
 
     for folder in folder_names:
-        folder = folder.strip().lower()  # Normalize tag names
+        folder = folder.strip().lower()
         if folder and folder not in existing_tags:
             new_tag_id = create_tag(folder)
             if new_tag_id:
-                existing_tags[folder] = new_tag_id  # Store new tag
+                existing_tags[folder] = new_tag_id
                 tag_ids.append(new_tag_id)
         elif folder:
             tag_ids.append(existing_tags[folder])
@@ -113,63 +123,14 @@ def get_tags_from_path(file_path, existing_tags):
     return tag_ids
 
 
-import datetime
-
-
-def log_message(message):
-    """Helper function to print messages with a timestamp"""
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}] {message}")
-
-
-def check_task_status(task_id):
-    """Poll the Paperless task API to check if the document was processed successfully"""
-    task_url = f"{BASE_API_URL}/tasks/?task_id={task_id}"
-
-    for _ in range(10):  # Polling up to 10 times with delays
-        response = requests.get(task_url, headers=HEADERS)
-
-        if response.status_code == 200:
-            try:
-                task_data = response.json()
-
-                if isinstance(task_data, list) and len(task_data) > 0:  # Ensure response is valid
-                    task = task_data[0]  # Get the first (and only) task
-                    status = task.get("status")
-                    file_name = task.get("task_file_name", "Unknown File")
-
-                    if status == "SUCCESS":
-                        doc_id = task.get("related_document")
-                        log_message(f"✅ Document '{file_name}' imported successfully (ID: {doc_id})")
-                        return True
-
-                    elif status == "FAILURE":
-                        result_message = task.get("result", "Unknown error")
-                        if "duplicate" in result_message.lower():
-                            duplicate_id = task.get("related_document")
-                            log_message(
-                                f"⚠️ Duplicate detected: '{file_name}' is already in Paperless (ID: {duplicate_id}). Skipping import.")
-                            return False
-                        else:
-                            log_message(f"❌ Import failed for '{file_name}': {result_message}")
-                            return False
-
-            except Exception as e:
-                log_message(f"⚠️ Error processing task response: {e}")
-
-        time.sleep(5)  # Wait 5 seconds before checking again
-
-    log_message(f"⚠️ Timeout while waiting for document processing (UUID: {task_id})")
-    return False
-
-
+# Upload a document without waiting for task status
 def upload_document(file_path, existing_tags):
-    """Upload a file to Paperless and track the processing task"""
+    """Upload a file to Paperless and store task ID for later processing"""
     with open(file_path, "rb") as file:
         tag_ids = get_tags_from_path(file_path, existing_tags)
 
         data = {
-            "title": os.path.basename(file_path),  # Use filename as title
+            "title": os.path.basename(file_path),
             "tags": tag_ids
         }
 
@@ -178,23 +139,73 @@ def upload_document(file_path, existing_tags):
         response = requests.post(f"{BASE_API_URL}/documents/post_document/", headers=HEADERS, data=data, files=files)
 
         if response.status_code == 200:
-            # Extract Task UUID from plain text response
             task_id = response.text.strip().replace('"', '')
-
-            print(f"📨 Document submitted for processing (Task UUID: {task_id})")
-            check_task_status(task_id)  # Poll the task API
+            submitted_tasks[task_id] = file_path
+            log_message(f"📨 Document '{file_path}' submitted (Task UUID: {task_id})")
         else:
-            print(f"❌ Error submitting document: {file_path}, Response: {response.text}")
+            log_message(f"❌ Error submitting document '{file_path}': {response.text}")
 
 
+# Check all task statuses at the end and generate a report
+def check_all_tasks():
+    """Check the status of all submitted tasks and generate a final report"""
+    log_message("\n🔍 Checking task statuses for all uploaded documents...\n")
+    results = {"imported": [], "duplicates": [], "failed": []}
+
+    for task_id, file_path in submitted_tasks.items():
+        task_url = f"{BASE_API_URL}/tasks/?task_id={task_id}"
+
+        for _ in range(10):  # Polling up to 10 times with delays
+            response = requests.get(task_url, headers=HEADERS)
+
+            if response.status_code == 200:
+                try:
+                    task_data = response.json()
+                    if isinstance(task_data, list) and len(task_data) > 0:
+                        task = task_data[0]
+                        status = task.get("status")
+                        file_name = task.get("task_file_name", file_path)
+
+                        if status == "SUCCESS":
+                            doc_id = task.get("related_document")
+                            results["imported"].append((file_name, doc_id))
+                            break
+                        elif status == "FAILURE":
+                            result_message = task.get("result", "Unknown error")
+                            if "duplicate" in result_message.lower():
+                                duplicate_id = task.get("related_document")
+                                results["duplicates"].append((file_name, duplicate_id))
+                            else:
+                                results["failed"].append((file_name, result_message))
+                            break
+                except Exception as e:
+                    log_message(f"⚠️ Error processing task response for {file_path}: {e}")
+
+            time.sleep(5)
+
+    log_message("\n📊 FINAL REPORT 📊")
+    log_message(f"✅ Imported: {len(results['imported'])}")
+    for file_name, doc_id in results["imported"]:
+        log_message(f"   - {file_name} (ID: {doc_id})")
+
+    log_message(f"⚠️ Duplicates: {len(results['duplicates'])}")
+    for file_name, duplicate_id in results["duplicates"]:
+        log_message(f"   - {file_name} (Existing ID: {duplicate_id})")
+
+    log_message(f"❌ Failed: {len(results['failed'])}")
+    for file_name, reason in results["failed"]:
+        log_message(f"   - {file_name} (Error: {reason})")
+
+
+# Main function to process files
 def main():
-    """Scan the directory and import files into Paperless"""
-    existing_tags = get_existing_tags()  # Load existing tags
-
+    existing_tags = get_existing_tags()
     for root, _, files in os.walk(WATCH_DIR):
         for filename in files:
             file_path = os.path.join(root, filename)
             upload_document(file_path, existing_tags)
+
+    check_all_tasks()
 
 
 if __name__ == "__main__":
