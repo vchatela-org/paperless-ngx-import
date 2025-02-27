@@ -12,18 +12,22 @@ from config_vault import vault_addr, vault_role_id, vault_secret_id
 # Paperless-NGX API configuration
 BASE_API_URL = "http://10.0.0.1:8010/api"
 WATCH_DIR = "Z:\\factures\\"
+
 IGNORED_PATHS = [
     "Z:\\",
     "/mnt/"
 ]
+IGNORED_FOLDERS = ["#recycle"]  # Ignore all files inside these folders
 
 # Store submitted tasks for batch checking later
 submitted_tasks = {}
+
 
 def log_message(message):
     """Print messages with a timestamp."""
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] {message}")
+
 
 def get_token_from_vault(vault_addr, role_id, secret_id, secret_path, secret_key):
     """Retrieve API token from HashiCorp Vault"""
@@ -43,7 +47,9 @@ def get_token_from_vault(vault_addr, role_id, secret_id, secret_path, secret_key
         log_message(f"❌ Error accessing Vault: {e}")
         return None
 
-PAPERLESS_API_TOKEN = get_token_from_vault(vault_addr, vault_role_id, vault_secret_id, "scripts-kv/paperless-ngx", "syno_import_api")
+
+PAPERLESS_API_TOKEN = get_token_from_vault(vault_addr, vault_role_id, vault_secret_id, "scripts-kv/paperless-ngx",
+                                           "syno_import_api")
 
 if not PAPERLESS_API_TOKEN:
     sys.exit("❌ Exiting: Unable to retrieve Paperless API token from Vault.")
@@ -52,6 +58,7 @@ HEADERS = {
     "Authorization": f"Token {PAPERLESS_API_TOKEN}",
     "Accept": "application/json"
 }
+
 
 def get_existing_tags():
     """Retrieve all existing tags and return a dictionary {lowercase name: id}"""
@@ -65,6 +72,7 @@ def get_existing_tags():
         log_message(f"⚠️ Failed to fetch tags: {response.text}")
     return {}
 
+
 def create_tag(tag_name):
     """Create a tag if it doesn't exist and return its ID"""
     tag_name = tag_name.lower().strip()
@@ -74,33 +82,55 @@ def create_tag(tag_name):
     log_message(f"⚠️ Failed to create tag '{tag_name}': {response.text}")
     return None
 
+
 def get_tags_from_path(file_path, existing_tags):
     """Extract relevant folder names from the file path and convert them to tag IDs."""
     normalized_path = os.path.normpath(file_path)
 
+    # Remove ignored prefixes
     for ignored in IGNORED_PATHS:
         if normalized_path.startswith(os.path.normpath(ignored)):
             normalized_path = normalized_path[len(os.path.normpath(ignored)):]
             break
 
+    # Extract only the directory path (exclude filename)
     parent_directory = os.path.dirname(normalized_path)
     folder_names = parent_directory.split(os.sep)
     tag_ids = []
 
     for folder in folder_names:
-        folder = folder.strip().lower()
-        if folder and folder not in existing_tags:
-            new_tag_id = create_tag(folder)
-            if new_tag_id:
-                existing_tags[folder] = new_tag_id
-                tag_ids.append(new_tag_id)
-        elif folder:
-            tag_ids.append(existing_tags[folder])
+        folder = folder.strip()
+
+        # Ignore any folders in the ignore list (like #recycle)
+        if folder.lower() in IGNORED_FOLDERS:
+            continue
+
+        # Split multi-word folders into separate tags
+        sub_tags = folder.split()
+
+        for sub_tag in sub_tags:
+            sub_tag = sub_tag.lower()
+
+            # Check if tag exists in a case-insensitive way
+            existing_tag_id = next((tid for name, tid in existing_tags.items() if name.lower() == sub_tag), None)
+            if existing_tag_id:
+                tag_ids.append(existing_tag_id)
+            else:
+                new_tag_id = create_tag(sub_tag)
+                if new_tag_id:
+                    existing_tags[sub_tag] = new_tag_id
+                    tag_ids.append(new_tag_id)
 
     return tag_ids
 
+
 def upload_document(file_path, existing_tags):
     """Upload a file to Paperless and store task ID for later processing"""
+    # Skip files inside ignored folders
+    if any(ignored_folder in file_path.lower() for ignored_folder in IGNORED_FOLDERS):
+        log_message(f"🚫 Skipping file in ignored folder: {file_path}")
+        return
+
     with open(file_path, "rb") as file:
         tag_ids = get_tags_from_path(file_path, existing_tags)
 
@@ -127,11 +157,11 @@ def wait_for_queue_to_clear():
         if response.status_code == 200:
             tasks = response.json()
             active_tasks = [task for task in tasks if task["status"] not in ["SUCCESS", "FAILURE"]]
-            log_message(f"⏳ Active tasks in queue: {len(active_tasks)}")  # Log active tasks count
+            log_message(f"⏳ Active tasks in queue: {len(active_tasks)}")
 
             if not active_tasks:
                 log_message("✅ Task queue is now empty. Proceeding with final status check.")
-                break  # Queue is empty
+                break
 
         time.sleep(5)
 
@@ -171,16 +201,13 @@ def check_all_tasks():
 
 def main():
     existing_tags = get_existing_tags()
-
     for root, _, files in os.walk(WATCH_DIR):
         for filename in files:
             upload_document(os.path.join(root, filename), existing_tags)
 
-    # Log the total number of submitted documents
     log_message(f"📨 Total submitted documents: {len(submitted_tasks)}")
-
-    wait_for_queue_to_clear()  # Wait until the queue is empty
-    check_all_tasks()  # Generate the final report
+    wait_for_queue_to_clear()
+    check_all_tasks()
 
 
 if __name__ == "__main__":
