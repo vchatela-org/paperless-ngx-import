@@ -61,16 +61,29 @@ HEADERS = {
 
 
 def get_existing_tags():
-    """Retrieve all existing tags and return a dictionary {lowercase name: id}"""
-    response = requests.get(f"{BASE_API_URL}/tags/", headers=HEADERS)
-    if response.status_code == 200:
-        try:
-            return {tag["name"].lower(): tag["id"] for tag in response.json().get("results", [])}
-        except Exception as e:
-            log_message(f"⚠️ Error parsing tags response: {e}")
-    else:
-        log_message(f"⚠️ Failed to fetch tags: {response.text}")
-    return {}
+    """Retrieve all existing tags from Paperless-NGX, handling pagination."""
+    all_tags = {}
+    url = f"{BASE_API_URL}/tags/"
+
+    while url:  # Keep requesting while there's a next page
+        response = requests.get(url, headers=HEADERS)
+
+        if response.status_code == 200:
+            try:
+                data = response.json()
+                for tag in data.get("results", []):
+                    all_tags[tag["name"].lower()] = tag["id"]  # Store tags in lowercase
+
+                url = data.get("next")  # Get the next page URL
+            except Exception as e:
+                log_message(f"⚠️ Error parsing tags response: {e}")
+                break
+        else:
+            log_message(f"⚠️ Failed to fetch tags: {response.text}")
+            break
+
+    log_message(f"✅ Retrieved {len(all_tags)} tags from Paperless-NGX.")
+    return all_tags
 
 
 def get_existing_tag_id(tag_name, existing_tags):
