@@ -166,7 +166,7 @@ def get_tags_from_path(file_path, existing_tags):
 
     for folder in folder_names:
         folder = folder.strip()
-        if folder.lower() in IGNORED_FOLDERS:
+        if folder.lower() in [ignored.lower() for ignored in IGNORED_FOLDERS]:
             continue
 
         sub_tags = folder.split()
@@ -183,7 +183,7 @@ def get_tags_from_path(file_path, existing_tags):
 # ----------------------------
 def upload_document(file_path, existing_tags):
     """Upload a file to Paperless and store task ID for later processing"""
-    if any(ignored_folder in file_path.lower() for ignored_folder in IGNORED_FOLDERS):
+    if any(ignored_folder.lower() in file_path.lower() for ignored_folder in IGNORED_FOLDERS):
         log_message(f"🚫 Skipping file in ignored folder: {file_path}")
         return
 
