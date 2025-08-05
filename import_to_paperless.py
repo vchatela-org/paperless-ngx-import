@@ -59,7 +59,7 @@ from config_vault import vault_addr, vault_role_id, vault_secret_id
 # ----------------------------
 BASE_API_URL = "https://paperless.example.com/api"
 IGNORED_FOLDERS = ["#recycle", "@eaDir"]  # Ignore all files inside these folders
-IGNORED_EXTENSIONS = [".url", ".pkpass", ".xlsx", ".xls", ".html", ".htm", ".ini", ".lnk", ".exe", ".msi", ".bat", ".cmd"]  # Unsupported file types
+IGNORED_EXTENSIONS = [".url", ".pkpass", ".xlsx", ".xls", ".html", ".htm", ".ini", ".lnk", ".exe", ".msi", ".bat", ".cmd", ".doc", ".docx"]  # Unsupported file types
 submitted_tasks = {}
 
 def log_message(message):
@@ -268,17 +268,87 @@ def upload_document(file_path, existing_tags):
 # ----------------------------
 # Processing Queue and Task Status
 # ----------------------------
+def get_task_details(task_id):
+    """Get detailed information about a specific task"""
+    try:
+        response = requests.get(f"{BASE_API_URL}/tasks/{task_id}/", headers=HEADERS, timeout=10)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            log_message(f"⚠️ Error getting task details for {task_id}: HTTP {response.status_code}")
+            return None
+    except requests.exceptions.RequestException as e:
+        log_message(f"⚠️ Network error getting task details for {task_id}: {e}")
+        return None
+
+def acknowledge_completed_tasks():
+    """Acknowledge all completed tasks to clean up the queue"""
+    try:
+        response = requests.get(f"{BASE_API_URL}/tasks/", headers=HEADERS)
+        if response.status_code == 200:
+            tasks = response.json()
+            completed_task_ids = [
+                task.get("id") for task in tasks 
+                if task.get("status") in ["SUCCESS", "FAILURE"] and not task.get("acknowledged", False)
+            ]
+            
+            if completed_task_ids:
+                log_message(f"🧹 Acknowledging {len(completed_task_ids)} completed tasks...")
+                ack_response = requests.post(
+                    f"{BASE_API_URL}/tasks/acknowledge/", 
+                    headers=HEADERS, 
+                    json={"tasks": completed_task_ids}
+                )
+                if ack_response.status_code == 200:
+                    log_message(f"✅ Successfully acknowledged {len(completed_task_ids)} completed tasks")
+                else:
+                    log_message(f"⚠️ Failed to acknowledge tasks: HTTP {ack_response.status_code}")
+            else:
+                log_message("ℹ️ No completed tasks to acknowledge")
+    except requests.exceptions.RequestException as e:
+        log_message(f"⚠️ Error acknowledging tasks: {e}")
+
 def wait_for_queue_to_clear():
     """Wait until the Paperless task queue is empty before checking task statuses"""
     log_message("\n⏳ Waiting for the Paperless queue to clear...")
+    
+    stuck_task_threshold = 60  # If a task stays the same for 60 seconds, consider it stuck
+    task_stuck_timer = {}
 
     while True:
         response = requests.get(f"{BASE_API_URL}/tasks/", headers=HEADERS)
         if response.status_code == 200:
             tasks = response.json()
-            active_tasks = [task for task in tasks if task["status"] not in ["SUCCESS", "FAILURE"]]
+            # Based on the API spec, these are the active statuses that should be waited for
+            active_statuses = ["PENDING", "RECEIVED", "STARTED", "RETRY"]
+            active_tasks = [task for task in tasks if task["status"] in active_statuses]
 
             log_message(f"⏳ Active tasks in queue: {len(active_tasks)}")
+            
+            # Debug: Log details of remaining tasks
+            if active_tasks:
+                log_message("🔍 Remaining active tasks:")
+                current_task_ids = []
+                current_time = time.time()
+                
+                for task in active_tasks:
+                    task_id = task.get("task_id", "Unknown")
+                    status = task.get("status", "Unknown")
+                    task_name = task.get("task_name", "Unknown")
+                    current_task_ids.append(task_id)
+                    
+                    # Track how long this task has been stuck
+                    if task_id not in task_stuck_timer:
+                        task_stuck_timer[task_id] = current_time
+                    elif current_time - task_stuck_timer[task_id] > stuck_task_threshold:
+                        log_message(f"   - Task {task_id}: {status} ({task_name}) ⚠️ STUCK for {int(current_time - task_stuck_timer[task_id])}s")
+                    else:
+                        log_message(f"   - Task {task_id}: {status} ({task_name})")
+                
+                # Clean up timers for tasks that are no longer active
+                task_stuck_timer = {tid: timer for tid, timer in task_stuck_timer.items() if tid in current_task_ids}
+            else:
+                task_stuck_timer.clear()
 
             if not active_tasks:
                 log_message("✅ Task queue is now empty. Proceeding with final status check.")
@@ -337,12 +407,16 @@ def main():
         uploaded_count += 1
 
     log_message(f"📊 Processing Summary:")
-    log_message(f"   � Total files found: {len(all_files)}")
+    log_message(f"   📁 Total files found: {len(all_files)}")
     log_message(f"   🚫 Skipped (ignored folders): {skipped_ignored}")
+    log_message(f"   🚫 Skipped (unsupported types): {skipped_unsupported}")
     log_message(f"   ⏭️ Skipped (already exist): {skipped_existing}")
     log_message(f"   📨 Submitted for upload: {uploaded_count}")
     
     if uploaded_count > 0:
+        # First acknowledge any completed tasks to clean up the queue
+        acknowledge_completed_tasks()
+        # Then wait for the new tasks to complete
         wait_for_queue_to_clear()
     else:
         log_message("✅ No new documents to upload!")
