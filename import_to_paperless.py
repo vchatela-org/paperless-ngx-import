@@ -20,7 +20,7 @@ def get_host_info():
 # Define Host-Specific Paths
 # ----------------------------
 HOST_PATHS = {
-    "DESKTOP-4NAMDD3": {
+    "Valentin-PC": {
         "WATCH_DIR": "Z:\\factures\\",
         "VAULT_SCRIPT_DIR": "Z:\\tools_enc\\Vault",
         "IGNORED_PATHS": ["Z:\\"]
@@ -56,7 +56,7 @@ from config_vault import vault_addr, vault_role_id, vault_secret_id
 # ----------------------------
 # Paperless-NGX API configuration
 # ----------------------------
-BASE_API_URL = "http://10.40.10.10:8010/api"
+BASE_API_URL = "https://paperless-ngx.k3s.internal.valentincloud.fr/api"
 IGNORED_FOLDERS = ["#recycle", "@eaDir"]  # Ignore all files inside these folders
 submitted_tasks = {}
 
@@ -71,7 +71,7 @@ def log_message(message):
 def get_token_from_vault(vault_addr, role_id, secret_id, secret_path, secret_key):
     """Retrieve API token from HashiCorp Vault"""
     try:
-        client = hvac.Client(url=vault_addr, verify=False)
+        client = hvac.Client(url=vault_addr, verify=True)
         client.auth.approle.login(role_id=role_id, secret_id=secret_id)
 
         if not client.is_authenticated():
@@ -228,9 +228,22 @@ def wait_for_queue_to_clear():
 # ----------------------------
 def main():
     existing_tags = get_existing_tags()
+
+    all_files = []
     for root, _, files in os.walk(WATCH_DIR):
         for filename in files:
-            upload_document(os.path.join(root, filename), existing_tags)
+            full_path = os.path.join(root, filename)
+            try:
+                mod_time = os.path.getmtime(full_path)
+                all_files.append((full_path, mod_time))
+            except FileNotFoundError:
+                log_message(f"⚠️ File not found or inaccessible: {full_path}")
+
+    # Sort by descending modification time
+    all_files.sort(key=lambda x: x[1], reverse=True)
+
+    for file_path, _ in all_files:
+        upload_document(file_path, existing_tags)
 
     log_message(f"📨 Total submitted documents: {len(submitted_tasks)}")
     wait_for_queue_to_clear()
