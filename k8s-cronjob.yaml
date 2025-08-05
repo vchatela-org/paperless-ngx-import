@@ -141,8 +141,8 @@ spec:
           # NFS volume for documents
           - name: documents-volume
             nfs:
-              server: your-nfs-server.local
-              path: /path/to/documents
+              server: syno.internal.valentincloud.fr
+              path: /volume1/factures/
               readOnly: true
           
           # Persistent volume for logs
@@ -163,8 +163,8 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: ""  # Static PV, no dynamic provisioning
   nfs:
-    server: your-nfs-server.local
-    path: /path/to/paperless-logs
+    server: syno.internal.valentincloud.fr
+    path: /volume2/docker/paperless-ngx/import/logs
 ---
 # PVC for persistent logs
 apiVersion: v1
