@@ -1,11 +1,11 @@
-FROM python:3.12-slim-bullseye
+FROM python:3.12-alpine
 
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies if needed
-RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/*
+# Install system dependencies if needed (Alpine uses apk instead of apt)
+RUN apk update && apk upgrade && apk add --no-cache \
+    && rm -rf /var/cache/apk/*
 
 # Copy requirements first for better caching
 COPY requirements.txt .
@@ -24,7 +24,7 @@ ENV PYTHONUNBUFFERED=1
 ENV WATCH_DIR=/mnt/documents
 
 # Create non-root user for security
-RUN groupadd -r paperless && useradd -r -g paperless paperless
+RUN addgroup -S paperless && adduser -S paperless -G paperless
 RUN chown -R paperless:paperless /app
 USER paperless
 
