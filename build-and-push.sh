@@ -67,8 +67,27 @@ echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
     echo -e "${YELLOW}Pushing to Harbor registry...${NC}"
     
-    # Harbor is public, no authentication required for pulls
-    echo -e "${YELLOW}Note: Harbor registry is PUBLIC, no authentication required for pulls.${NC}"
+    # Check if logged in to Harbor (required for pushing)
+    echo -e "${YELLOW}Checking Harbor authentication...${NC}"
+    if ! docker system info 2>/dev/null | grep -q "${REGISTRY_URL}"; then
+        echo -e "${YELLOW}You need to login to Harbor to push images:${NC}"
+        echo "  docker login ${REGISTRY_URL}"
+        echo ""
+        read -p "Login now? (y/N): " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            if ! docker login "${REGISTRY_URL}"; then
+                echo -e "${RED}✗ Harbor login failed${NC}"
+                exit 1
+            fi
+        else
+            echo -e "${YELLOW}Skipping push - login required${NC}"
+            exit 0
+        fi
+    fi
+    
+    # Note: Harbor project is public for pulls, but authentication required for pushes
+    echo -e "${YELLOW}Note: Harbor project is PUBLIC for pulls, but authentication required for pushes.${NC}"
     
     # Push specific tag
     if docker push "${FULL_IMAGE_NAME}"; then
@@ -102,7 +121,6 @@ echo "To run locally with Docker Compose:"
 echo "  docker-compose up"
 echo
 echo "To deploy to Kubernetes:"
-echo "  1. Update the image name in k8s-cronjob.yaml"
-echo "  2. Update NFS server and path settings"
-echo "  3. Update API token in the secret"
-echo "  4. kubectl apply -f k8s-cronjob.yaml"
+echo "  1. Set up Vault integration (see VAULT-SETUP.md)"
+echo "  2. Update NFS server and path settings in k8s-cronjob.yaml"
+echo "  3. kubectl apply -f k8s-cronjob.yaml"

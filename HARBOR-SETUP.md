@@ -13,16 +13,20 @@
    - Enable vulnerability scanning ✅
    - Click "OK"
 
-### 2. Docker Login to Harbor
+### 2. Docker Login to Harbor (Required for Pushing)
+
+Even though the project is public (for pulling), you still need to authenticate to push images:
 
 ```bash
-# Login to Harbor
+# Login to Harbor - required for pushing images
 docker login harbor.k3s.internal.valentincloud.fr
 
 # Use your Harbor credentials:
 # Username: admin (or your Harbor username)
 # Password: your-harbor-password
 ```
+
+**Note**: Public projects in Harbor only make **pulling** images public. **Pushing** still requires authentication.
 
 ### 3. Build and Push Image
 
@@ -138,9 +142,10 @@ kubectl run debug --image=harbor.k3s.internal.valentincloud.fr/import-paperless-
 ### Common Issues
 
 1. **Authentication Failed**
-   - Verify Harbor credentials
-   - Check if user has access to project
-   - Ensure project exists and is accessible
+   - **For pushing**: Always required, even for public projects
+   - **For pulling**: Not required for public projects
+   - Verify Harbor credentials with: `docker login harbor.k3s.internal.valentincloud.fr`
+   - Check if user has push access to project
 
 2. **Image Not Found**
    - Verify image was pushed successfully
