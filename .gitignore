@@ -6,3 +6,7 @@ __pycache__/
 *.pyd
 .venv-docker-vm/
 logs/
+
+# Docker
+.env
+docker-compose.override.yml
