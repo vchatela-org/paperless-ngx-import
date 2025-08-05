@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  paperless-import:
+    # Build locally or use Harbor image
+    # build: .
+    image: harbor.k3s.internal.valentincloud.fr/import-paperless-ngx/paperless-import:latest
+    container_name: paperless-import
+    environment:
+      # Required: Paperless API configuration
+      PAPERLESS_API_URL: "https://paperless-ngx.k3s.internal.valentincloud.fr/api"
+      PAPERLESS_API_TOKEN: "your-api-token-here"
+      
+      # Directory configuration
+      WATCH_DIR: "/mnt/documents"
+      
+      # Optional: Customize ignored patterns
+      IGNORED_PATHS: "/mnt/"
+      IGNORED_FOLDERS: "#recycle,@eaDir"
+      IGNORED_EXTENSIONS: ".url,.pkpass,.xlsx,.xls,.html,.htm,.ini,.lnk,.exe,.msi,.bat,.cmd,.doc,.docx"
+      
+      # Optional: Log retention
+      LOG_RETENTION_DAYS: "30"
+      
+    volumes:
+      # Mount your document directory (NFS mount point)
+      - /path/to/your/documents:/mnt/documents:ro
+      
+      # Optional: Persist logs
+      - ./logs:/app/logs
+      
+    restart: "no"  # For CronJob use, we don't want auto-restart
