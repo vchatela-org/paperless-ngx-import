@@ -21,7 +21,7 @@ def get_container_config():
         "PAPERLESS_API_TOKEN": os.getenv("PAPERLESS_API_TOKEN"),
         "IGNORED_PATHS": os.getenv("IGNORED_PATHS", "/mnt/").split(","),
         "IGNORED_FOLDERS": os.getenv("IGNORED_FOLDERS", "#recycle,@eaDir").split(","),
-        "IGNORED_EXTENSIONS": os.getenv("IGNORED_EXTENSIONS", ".url,.pkpass,.xlsx,.xls,.html,.htm,.ini,.lnk,.exe,.msi,.bat,.cmd,.doc,.docx").split(","),
+        "IGNORED_EXTENSIONS": os.getenv("IGNORED_EXTENSIONS", ".url,.pkpass,.xlsx,.xls,.html,.htm,.ini,.lnk,.exe,.msi,.bat,.cmd,.doc,.docx,.db,.mp4,.zip").split(","),
         "LOG_RETENTION_DAYS": int(os.getenv("LOG_RETENTION_DAYS", "30"))
     }
     
@@ -304,8 +304,14 @@ def upload_document(file_path, existing_tags):
                 log_message(f"Document '{os.path.basename(file_path)}' submitted (Task UUID: {task_id})")
                 return True
             else:
-                log_message(f"Error submitting document '{os.path.basename(file_path)}': {response.text}", "ERROR")
-                return False
+                error_text = response.text.lower()
+                # Check if this is an expected issue (unsupported file type or empty file)
+                if "not supported" in error_text or "empty" in error_text:
+                    log_message(f"Skipping document '{os.path.basename(file_path)}': {response.text}", "WARNING")
+                    return None  # Not counted as success or failure
+                else:
+                    log_message(f"Error submitting document '{os.path.basename(file_path)}': {response.text}", "ERROR")
+                    return False
     except Exception as e:
         log_message(f"Exception while uploading '{os.path.basename(file_path)}': {e}", "ERROR")
         return False
@@ -444,6 +450,7 @@ def main():
         skipped_existing = 0
         skipped_ignored = 0
         skipped_unsupported = 0
+        skipped_api_issues = 0  # For unsupported file types and empty files at API level
         uploaded_count = 0
         failed_uploads = 0
 
@@ -486,7 +493,9 @@ def main():
             upload_success = upload_document(file_path, existing_tags)
             if upload_success is False:  # Explicit False means upload failed
                 failed_uploads += 1
-            else:
+            elif upload_success is None:  # None means skipped (ignored folder or API-level issue)
+                skipped_api_issues += 1
+            else:  # True means successful upload
                 uploaded_count += 1
 
         log_message(f"Processing Summary:")
@@ -494,6 +503,7 @@ def main():
         log_message(f"   Skipped (ignored folders): {skipped_ignored}")
         log_message(f"   Skipped (unsupported types): {skipped_unsupported}")
         log_message(f"   Skipped (already exist): {skipped_existing}")
+        log_message(f"   Skipped (API issues - unsupported/empty): {skipped_api_issues}")
         log_message(f"   Submitted for upload: {uploaded_count}")
         if failed_uploads > 0:
             log_message(f"   Failed uploads: {failed_uploads}", "ERROR")
