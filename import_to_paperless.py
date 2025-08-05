@@ -6,6 +6,7 @@ import platform
 import socket
 import hvac
 import requests
+import hashlib
 
 # ----------------------------
 # Function to Get Host and OS
@@ -21,9 +22,9 @@ def get_host_info():
 # ----------------------------
 HOST_PATHS = {
     "Valentin-PC": {
-        "WATCH_DIR": "Z:\\factures\\",
-        "VAULT_SCRIPT_DIR": "Z:\\tools_enc\\Vault",
-        "IGNORED_PATHS": ["Z:\\"]
+        "WATCH_DIR": "/mnt/z/factures/",
+        "VAULT_SCRIPT_DIR": "/mnt/z/tools_enc/Vault",
+        "IGNORED_PATHS": ["/mnt/z/"]
     },
     "docker-vm": {
         "WATCH_DIR": "/mnt/factures/",
@@ -31,9 +32,9 @@ HOST_PATHS = {
         "IGNORED_PATHS": ["/mnt/"]
     },
     "default": {  # Fallback paths
-        "WATCH_DIR": "Z:\\factures\\",
-        "VAULT_SCRIPT_DIR": "Z:\\tools_enc\\Vault",
-        "IGNORED_PATHS": ["Z:\\"]
+        "WATCH_DIR": "/mnt/z/factures/",
+        "VAULT_SCRIPT_DIR": "/mnt/z/tools_enc/Vault",
+        "IGNORED_PATHS": ["/mnt/z/"]
     }
 }
 
@@ -58,6 +59,7 @@ from config_vault import vault_addr, vault_role_id, vault_secret_id
 # ----------------------------
 BASE_API_URL = "https://paperless.example.com/api"
 IGNORED_FOLDERS = ["#recycle", "@eaDir"]  # Ignore all files inside these folders
+IGNORED_EXTENSIONS = [".url", ".pkpass", ".xlsx", ".xls", ".html", ".htm", ".ini", ".lnk", ".exe", ".msi", ".bat", ".cmd"]  # Unsupported file types
 submitted_tasks = {}
 
 def log_message(message):
@@ -97,6 +99,67 @@ HEADERS = {
     "Authorization": f"Token {PAPERLESS_API_TOKEN}",
     "Accept": "application/json"
 }
+
+# ----------------------------
+# Function to Calculate File Checksum
+# ----------------------------
+def calculate_file_checksum(file_path):
+    """Calculate MD5 checksum of a file."""
+    hash_md5 = hashlib.md5()
+    try:
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                hash_md5.update(chunk)
+        return hash_md5.hexdigest()
+    except Exception as e:
+        log_message(f"⚠️ Error calculating checksum for {file_path}: {e}")
+        return None
+
+# ----------------------------
+# Function to Check if Document Already Exists
+# ----------------------------
+def document_exists(file_path):
+    """Check if document already exists in Paperless-ngx by checksum and filename."""
+    filename = os.path.basename(file_path)
+    checksum = calculate_file_checksum(file_path)
+    
+    if not checksum:
+        log_message(f"⚠️ Could not calculate checksum for {filename}, skipping existence check")
+        return False
+    
+    # Check by checksum first (most reliable) - limit to 1 result for efficiency
+    params = {"checksum__iexact": checksum, "page_size": 1}
+    try:
+        response = requests.get(f"{BASE_API_URL}/documents/", headers=HEADERS, params=params, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("count", 0) > 0:
+                existing_doc = data["results"][0]
+                log_message(f"📄 Document already exists (checksum match): {filename} -> '{existing_doc.get('title', 'Unknown')}'")
+                return True
+        else:
+            log_message(f"⚠️ Error checking document by checksum: HTTP {response.status_code}")
+    except requests.exceptions.RequestException as e:
+        log_message(f"⚠️ Network error checking document by checksum: {e}")
+    
+    # Fallback: check by exact filename - limit to 1 result for efficiency  
+    params = {"original_filename__iexact": filename, "page_size": 1}
+    try:
+        response = requests.get(f"{BASE_API_URL}/documents/", headers=HEADERS, params=params, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("count", 0) > 0:
+                existing_doc = data["results"][0]
+                log_message(f"📄 Document already exists (filename match): {filename} -> '{existing_doc.get('title', 'Unknown')}'")
+                return True
+        else:
+            log_message(f"⚠️ Error checking document by filename: HTTP {response.status_code}")
+    except requests.exceptions.RequestException as e:
+        log_message(f"⚠️ Network error checking document by filename: {e}")
+    
+    return False
 
 # ----------------------------
 # Retrieve Existing Tags from Paperless
@@ -198,9 +261,9 @@ def upload_document(file_path, existing_tags):
         if response.status_code == 200:
             task_id = response.text.strip().replace('"', '')
             submitted_tasks[task_id] = file_path
-            log_message(f"📨 Document '{file_path}' submitted (Task UUID: {task_id})")
+            log_message(f"📨 Document '{os.path.basename(file_path)}' submitted (Task UUID: {task_id})")
         else:
-            log_message(f"❌ Error submitting document '{file_path}': {response.text}")
+            log_message(f"❌ Error submitting document '{os.path.basename(file_path)}': {response.text}")
 
 # ----------------------------
 # Processing Queue and Task Status
@@ -228,6 +291,11 @@ def wait_for_queue_to_clear():
 # ----------------------------
 def main():
     existing_tags = get_existing_tags()
+    
+    skipped_existing = 0
+    skipped_ignored = 0
+    skipped_unsupported = 0
+    uploaded_count = 0
 
     all_files = []
     for root, _, files in os.walk(WATCH_DIR):
@@ -242,11 +310,42 @@ def main():
     # Sort by descending modification time
     all_files.sort(key=lambda x: x[1], reverse=True)
 
-    for file_path, _ in all_files:
-        upload_document(file_path, existing_tags)
+    log_message(f"🔍 Found {len(all_files)} files to process")
 
-    log_message(f"📨 Total submitted documents: {len(submitted_tasks)}")
-    wait_for_queue_to_clear()
+    for file_path, _ in all_files:
+        filename = os.path.basename(file_path)
+        file_ext = os.path.splitext(filename)[1].lower()
+        
+        # Check if file is in ignored folder
+        if any(ignored_folder.lower() in file_path.lower() for ignored_folder in IGNORED_FOLDERS):
+            skipped_ignored += 1
+            continue
+            
+        # Check if file extension is unsupported
+        if file_ext in IGNORED_EXTENSIONS:
+            log_message(f"🚫 Skipping unsupported file type: {filename} ({file_ext})")
+            skipped_unsupported += 1
+            continue
+            
+        # Check if document already exists
+        if document_exists(file_path):
+            skipped_existing += 1
+            continue
+            
+        # Upload the document
+        upload_document(file_path, existing_tags)
+        uploaded_count += 1
+
+    log_message(f"📊 Processing Summary:")
+    log_message(f"   � Total files found: {len(all_files)}")
+    log_message(f"   🚫 Skipped (ignored folders): {skipped_ignored}")
+    log_message(f"   ⏭️ Skipped (already exist): {skipped_existing}")
+    log_message(f"   📨 Submitted for upload: {uploaded_count}")
+    
+    if uploaded_count > 0:
+        wait_for_queue_to_clear()
+    else:
+        log_message("✅ No new documents to upload!")
 
 if __name__ == "__main__":
     main()
