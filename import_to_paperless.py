@@ -281,6 +281,21 @@ def get_task_details(task_id):
         log_message(f"⚠️ Network error getting task details for {task_id}: {e}")
         return None
 
+def delete_task(task_id):
+    """Delete a specific task by its ID"""
+    try:
+        response = requests.delete(f"{BASE_API_URL}/tasks/{task_id}/", headers=HEADERS, timeout=10)
+        if response.status_code in [200, 204]:
+            log_message(f"✅ Successfully deleted task: {task_id}")
+            return True
+        else:
+            log_message(f"⚠️ Failed to delete task {task_id}: HTTP {response.status_code}")
+            log_message(f"Response: {response.text}")
+            return False
+    except requests.exceptions.RequestException as e:
+        log_message(f"⚠️ Network error deleting task {task_id}: {e}")
+        return False
+
 def acknowledge_completed_tasks():
     """Acknowledge all completed tasks to clean up the queue"""
     try:
