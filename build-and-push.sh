@@ -5,7 +5,7 @@
 
 # Configuration - Update these variables for your setup
 REGISTRY_URL="registry.example.com"
-PROJECT_NAME="import-paperless-ngx"  # Public project name
+PROJECT_NAME="homelab"  # Public project name
 IMAGE_NAME="paperless-import"
 IMAGE_TAG=${1:-latest}
 FULL_IMAGE_NAME="${REGISTRY_URL}/${PROJECT_NAME}/${IMAGE_NAME}:${IMAGE_TAG}"
