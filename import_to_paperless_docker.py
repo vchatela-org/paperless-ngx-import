@@ -347,6 +347,42 @@ def delete_task(task_id):
         log_message(f"Network error deleting task {task_id}: {e}", "WARNING")
         return False
 
+def clear_all_tasks():
+    """Clear all tasks from the queue"""
+    try:
+        log_message("🧹 Clearing all tasks from the queue due to stuck tasks...", "WARNING")
+        response = requests.get(f"{BASE_API_URL}/tasks/", headers=HEADERS, timeout=10)
+        if response.status_code == 200:
+            tasks = response.json()
+            task_ids_to_delete = [task.get("id") for task in tasks if task.get("id")]
+            
+            if not task_ids_to_delete:
+                log_message("No tasks found to clear")
+                return True
+            
+            log_message(f"Found {len(task_ids_to_delete)} tasks to clear")
+            deleted_count = 0
+            failed_count = 0
+            
+            for task_id in task_ids_to_delete:
+                if delete_task(task_id):
+                    deleted_count += 1
+                else:
+                    failed_count += 1
+            
+            if failed_count == 0:
+                log_message(f"✅ Successfully cleared {deleted_count} tasks from the queue")
+                return True
+            else:
+                log_message(f"⚠️ Cleared {deleted_count} tasks, but {failed_count} tasks failed to delete", "WARNING")
+                return False
+        else:
+            log_message(f"Failed to get tasks for clearing: HTTP {response.status_code}", "ERROR")
+            return False
+    except requests.exceptions.RequestException as e:
+        log_message(f"Network error while clearing tasks: {e}", "ERROR")
+        return False
+
 def acknowledge_completed_tasks():
     """Acknowledge all completed tasks to clean up the queue"""
     try:
@@ -376,10 +412,11 @@ def acknowledge_completed_tasks():
 
 def wait_for_queue_to_clear():
     """Wait until the Paperless task queue is empty before checking task statuses"""
-    log_message("Waiting for the Paperless queue to clear...")
+    log_message("⏳ Waiting for the Paperless queue to clear...")
     
-    stuck_task_threshold = 60  # If a task stays the same for 60 seconds, consider it stuck
+    stuck_task_threshold = 300  # If a task stays the same for 300 seconds (5 minutes), consider it stuck
     task_stuck_timer = {}
+    queue_cleared_due_to_stuck_tasks = False
 
     while True:
         response = requests.get(f"{BASE_API_URL}/tasks/", headers=HEADERS)
@@ -389,13 +426,14 @@ def wait_for_queue_to_clear():
             active_statuses = ["PENDING", "RECEIVED", "STARTED", "RETRY"]
             active_tasks = [task for task in tasks if task["status"] in active_statuses]
 
-            log_message(f"Active tasks in queue: {len(active_tasks)}")
+            log_message(f"📊 Active tasks in queue: {len(active_tasks)}")
             
             # Debug: Log details of remaining tasks
             if active_tasks:
                 log_message("Remaining active tasks:")
                 current_task_ids = []
                 current_time = time.time()
+                has_stuck_tasks = False
                 
                 for task in active_tasks:
                     task_id = task.get("task_id", "Unknown")
@@ -406,10 +444,24 @@ def wait_for_queue_to_clear():
                     # Track how long this task has been stuck
                     if task_id not in task_stuck_timer:
                         task_stuck_timer[task_id] = current_time
-                    elif current_time - task_stuck_timer[task_id] > stuck_task_threshold:
-                        log_message(f"   - Task {task_id}: {status} ({task_name}) STUCK for {int(current_time - task_stuck_timer[task_id])}s")
                     else:
-                        log_message(f"   - Task {task_id}: {status} ({task_name})")
+                        stuck_duration = current_time - task_stuck_timer[task_id]
+                        if stuck_duration > stuck_task_threshold:
+                            log_message(f"   - Task {task_id}: {status} ({task_name}) STUCK for {int(stuck_duration)}s", "WARNING")
+                            has_stuck_tasks = True
+                        else:
+                            log_message(f"   - Task {task_id}: {status} ({task_name})")
+                
+                # If we have tasks stuck for more than 5 minutes, clear the entire queue
+                if has_stuck_tasks and not queue_cleared_due_to_stuck_tasks:
+                    log_message("❌ Detected tasks stuck for more than 5 minutes. Clearing the entire queue...", "WARNING")
+                    if clear_all_tasks():
+                        queue_cleared_due_to_stuck_tasks = True
+                        task_stuck_timer.clear()
+                        log_message("🚀 Queue cleared successfully. Continuing to monitor...")
+                        # Continue monitoring to ensure the queue is actually clear
+                    else:
+                        log_message("⚠️ Failed to clear the queue completely. Will retry on next iteration.", "ERROR")
                 
                 # Clean up timers for tasks that are no longer active
                 task_stuck_timer = {tid: timer for tid, timer in task_stuck_timer.items() if tid in current_task_ids}
@@ -417,7 +469,10 @@ def wait_for_queue_to_clear():
                 task_stuck_timer.clear()
 
             if not active_tasks:
-                log_message("Task queue is now empty. Proceeding with final status check.")
+                if queue_cleared_due_to_stuck_tasks:
+                    log_message("✅ Task queue is now empty after clearing stuck tasks.")
+                else:
+                    log_message("✅ Task queue is now empty. Proceeding with final status check.")
                 break
 
         time.sleep(5)
