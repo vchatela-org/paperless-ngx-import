@@ -2,6 +2,8 @@ FROM python:3.13-alpine
 
 WORKDIR /app
 
+RUN cat /etc/resolv.conf && getent hosts dl-cdn.alpinelinux.org || true
+
 # Upgrade base OS packages (for security)
 RUN apk upgrade --no-cache
 
