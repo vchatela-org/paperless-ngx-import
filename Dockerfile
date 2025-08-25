@@ -3,7 +3,7 @@ FROM python:3.13-alpine
 WORKDIR /app
 
 # Upgrade base OS packages (for security)
-RUN --network=host apk upgrade --no-cache
+RUN apk upgrade --no-cache
 
 # Python deps
 COPY requirements.txt .
