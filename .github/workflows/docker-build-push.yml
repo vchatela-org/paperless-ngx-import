@@ -33,27 +33,3 @@ jobs:
 
       - name: Image digest
         run: echo "Image pushed: ${{ secrets.HARBOR_REGISTRY }}/${{ secrets.HARBOR_PROJECT }}/${{ secrets.HARBOR_IMAGE }}:${{ github.ref_name }} and :latest"
-
-      # - name: Trigger Harbor scan and collect result
-      #   env:
-      #     HARBOR_REGISTRY: ${{ secrets.HARBOR_REGISTRY }}
-      #     HARBOR_PROJECT: ${{ secrets.HARBOR_PROJECT }}
-      #     HARBOR_IMAGE: ${{ secrets.HARBOR_IMAGE }}
-      #     HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
-      #     HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
-      #     TAG: ${{ github.ref_name }}
-      #   run: |
-      #     set -e
-      #     # Get artifact reference (digest)
-      #     ARTIFACT_URL="https://${HARBOR_REGISTRY}/api/v2.0/projects/${HARBOR_PROJECT}/repositories/${HARBOR_IMAGE}/artifacts/${TAG}"
-      #     # Trigger scan
-      #     curl -u "$HARBOR_USERNAME:$HARBOR_PASSWORD" -X POST "$ARTIFACT_URL/scan"
-      #     # Poll scan status
-      #     for i in {1..20}; do
-      #       STATUS=$(curl -s -u "$HARBOR_USERNAME:$HARBOR_PASSWORD" "$ARTIFACT_URL" | jq -r '.scan_overview[].scan_status')
-      #       echo "Scan status: $STATUS"
-      #       if [[ "$STATUS" == "Success" || "$STATUS" == "Finished" ]]; then break; fi
-      #       sleep 10
-      #     done
-      #     # Print scan summary
-      #     curl -s -u "$HARBOR_USERNAME:$HARBOR_PASSWORD" "$ARTIFACT_URL" | jq '.scan_overview'
