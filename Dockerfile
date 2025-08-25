@@ -2,6 +2,8 @@ FROM python:3.13-alpine
 
 WORKDIR /app
 
+RUN apk update && apk add bind-tools
+
 # Upgrade base OS packages (for security)
 RUN apk upgrade --no-cache
 
