@@ -32,4 +32,5 @@ jobs:
             ${{ secrets.HARBOR_REGISTRY }}/${{ secrets.HARBOR_PROJECT }}/${{ secrets.HARBOR_IMAGE }}:latest
 
       - name: Image digest
-        run: echo "Image pushed: ${{ secrets.HARBOR_REGISTRY }}/${{ secrets.HARBOR_PROJECT }}/${{ secrets.HARBOR_IMAGE }}:${{ github.ref_name }} and :latest"
+        run: |
+          echo "Image pushed: ${{ secrets.HARBOR_REGISTRY }}/${{ secrets.HARBOR_PROJECT }}/${{ secrets.HARBOR_IMAGE }}:${{ github.ref_name }} and :latest"
