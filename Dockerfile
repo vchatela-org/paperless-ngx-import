@@ -4,7 +4,8 @@ FROM python:3.13.7-slim
 WORKDIR /app
 
 # Upgrade base OS packages (for security)
-RUN apk upgrade --no-cache
+# RUN apk upgrade --no-cache
+RUN apt update && apt upgrade -y && apt clean
 
 # Python deps
 COPY requirements.txt .
