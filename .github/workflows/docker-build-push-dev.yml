@@ -41,34 +41,67 @@ jobs:
         run: |
           echo "Verifying image exists in Harbor registry..."
           
+          # URL encode the repository name for Harbor API
+          ENCODED_REPO_NAME=$(echo "${{ secrets.HARBOR_IMAGE }}" | sed 's|/|%2F|g')
+          
+          # Clean Harbor registry URL (remove protocol if present, and trailing slash)
+          HARBOR_HOST="${{ secrets.HARBOR_REGISTRY }}"
+          HARBOR_HOST=$(echo "$HARBOR_HOST" | sed 's|^https://||' | sed 's|^http://||' | sed 's|/$||')
+          
+          # Construct the API URL
+          API_URL="https://${HARBOR_HOST}/api/v2.0/projects/${{ secrets.HARBOR_PROJECT }}/repositories/${ENCODED_REPO_NAME}/artifacts/dev"
+          
+          echo "Debug: API URL = $API_URL"
+          echo "Debug: Repository name (encoded) = $ENCODED_REPO_NAME"
+          
           # Check if the artifact exists via Harbor API
           response=$(curl -s -w "%{http_code}" \
             -u "${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}" \
-            "${{ secrets.HARBOR_REGISTRY }}/api/v2.0/projects/${{ secrets.HARBOR_PROJECT }}/repositories/${{ secrets.HARBOR_IMAGE }}/artifacts/dev" \
+            "$API_URL" \
             -o /tmp/artifact_response.json)
+          
+          echo "Debug: HTTP response code = $response"
+          echo "Debug: Response body:"
+          cat /tmp/artifact_response.json
           
           if [ "$response" = "200" ]; then
             echo "✅ Image successfully pushed and available in Harbor"
             # Display image details
             echo "Image details:"
-            jq -r '"  Digest: " + .digest' /tmp/artifact_response.json
-            jq -r '"  Size: " + (.size | tostring) + " bytes"' /tmp/artifact_response.json
-            jq -r '"  Push time: " + .push_time' /tmp/artifact_response.json
+            jq -r '"  Digest: " + .digest' /tmp/artifact_response.json 2>/dev/null || echo "  Digest: N/A"
+            jq -r '"  Size: " + (.size | tostring) + " bytes"' /tmp/artifact_response.json 2>/dev/null || echo "  Size: N/A"
+            jq -r '"  Push time: " + .push_time' /tmp/artifact_response.json 2>/dev/null || echo "  Push time: N/A"
           else
             echo "❌ Image not found in Harbor registry"
             echo "HTTP response code: $response"
-            cat /tmp/artifact_response.json
             exit 1
           fi
 
       - name: Trigger Harbor vulnerability scan
         run: |
           echo "Triggering vulnerability scan..."
+          
+          # URL encode the repository name for Harbor API
+          ENCODED_REPO_NAME=$(echo "${{ secrets.HARBOR_IMAGE }}" | sed 's|/|%2F|g')
+          
+          # Clean Harbor registry URL (remove protocol if present, and trailing slash)
+          HARBOR_HOST="${{ secrets.HARBOR_REGISTRY }}"
+          HARBOR_HOST=$(echo "$HARBOR_HOST" | sed 's|^https://||' | sed 's|^http://||' | sed 's|/$||')
+          
+          # Construct the scan API URL
+          SCAN_API_URL="https://${HARBOR_HOST}/api/v2.0/projects/${{ secrets.HARBOR_PROJECT }}/repositories/${ENCODED_REPO_NAME}/artifacts/dev/scan"
+          
+          echo "Debug: Scan API URL = $SCAN_API_URL"
+          
           response_code=$(curl -s -w "%{http_code}" -o /tmp/scan_response.json \
             -X POST \
             -u "${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}" \
             -H "Content-Type: application/json" \
-            "${{ secrets.HARBOR_REGISTRY }}/api/v2.0/projects/${{ secrets.HARBOR_PROJECT }}/repositories/${{ secrets.HARBOR_IMAGE }}/artifacts/dev/scan")
+            "$SCAN_API_URL")
+          
+          echo "Debug: Scan HTTP response code = $response_code"
+          echo "Debug: Scan response body:"
+          cat /tmp/scan_response.json
           
           if [ "$response_code" = "202" ]; then
             echo "✅ Vulnerability scan triggered successfully"
@@ -76,7 +109,6 @@ jobs:
             echo "⚠️ Scan already in progress or recently completed"
           else
             echo "⚠️ Scan trigger returned HTTP $response_code"
-            cat /tmp/scan_response.json
           fi
 
       - name: Wait for scan completion
@@ -85,10 +117,20 @@ jobs:
           max_attempts=30
           attempt=0
           
+          # URL encode the repository name for Harbor API
+          ENCODED_REPO_NAME=$(echo "${{ secrets.HARBOR_IMAGE }}" | sed 's|/|%2F|g')
+          
+          # Clean Harbor registry URL (remove protocol if present, and trailing slash)
+          HARBOR_HOST="${{ secrets.HARBOR_REGISTRY }}"
+          HARBOR_HOST=$(echo "$HARBOR_HOST" | sed 's|^https://||' | sed 's|^http://||' | sed 's|/$||')
+          
+          # Construct the artifacts API URL
+          ARTIFACTS_API_URL="https://${HARBOR_HOST}/api/v2.0/projects/${{ secrets.HARBOR_PROJECT }}/repositories/${ENCODED_REPO_NAME}/artifacts/dev"
+          
           while [ $attempt -lt $max_attempts ]; do
             scan_data=$(curl -s \
               -u "${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}" \
-              "${{ secrets.HARBOR_REGISTRY }}/api/v2.0/projects/${{ secrets.HARBOR_PROJECT }}/repositories/${{ secrets.HARBOR_IMAGE }}/artifacts/dev")
+              "$ARTIFACTS_API_URL")
             
             scan_status=$(echo "$scan_data" | jq -r '.scan_overview.["application/vnd.security.vulnerability.report; version=1.1"].scan_status // "Not Available"')
             
@@ -120,10 +162,20 @@ jobs:
         run: |
           echo "Retrieving vulnerability scan results..."
           
+          # URL encode the repository name for Harbor API
+          ENCODED_REPO_NAME=$(echo "${{ secrets.HARBOR_IMAGE }}" | sed 's|/|%2F|g')
+          
+          # Clean Harbor registry URL (remove protocol if present, and trailing slash)
+          HARBOR_HOST="${{ secrets.HARBOR_REGISTRY }}"
+          HARBOR_HOST=$(echo "$HARBOR_HOST" | sed 's|^https://||' | sed 's|^http://||' | sed 's|/$||')
+          
+          # Construct the artifacts API URL
+          ARTIFACTS_API_URL="https://${HARBOR_HOST}/api/v2.0/projects/${{ secrets.HARBOR_PROJECT }}/repositories/${ENCODED_REPO_NAME}/artifacts/dev"
+          
           # Get scan results
           scan_data=$(curl -s \
             -u "${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}" \
-            "${{ secrets.HARBOR_REGISTRY }}/api/v2.0/projects/${{ secrets.HARBOR_PROJECT }}/repositories/${{ secrets.HARBOR_IMAGE }}/artifacts/dev")
+            "$ARTIFACTS_API_URL")
           
           # Check if scan data exists
           scan_overview=$(echo "$scan_data" | jq -r '.scan_overview.["application/vnd.security.vulnerability.report; version=1.1"] // null')
