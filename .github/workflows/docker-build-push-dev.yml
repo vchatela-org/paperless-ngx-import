@@ -143,8 +143,8 @@ jobs:
           HARBOR_HOST="${{ env.HARBOR_REGISTRY }}"
           HARBOR_HOST=$(echo "$HARBOR_HOST" | sed 's|^https://||' | sed 's|^http://||' | sed 's|/$||')
           
-          # Construct the artifacts API URL using the configurable tag
-          ARTIFACTS_API_URL="https://${HARBOR_HOST}/api/v2.0/projects/${{ env.HARBOR_PROJECT }}/repositories/${ENCODED_REPO_NAME}/artifacts/${SCAN_TAG}"
+          # Construct the artifacts API URL using the configurable tag with scan overview
+          ARTIFACTS_API_URL="https://${HARBOR_HOST}/api/v2.0/projects/${{ env.HARBOR_PROJECT }}/repositories/${ENCODED_REPO_NAME}/artifacts/${SCAN_TAG}?with_scan_overview=true"
           
           while [ $attempt -lt $max_attempts ]; do
             scan_data=$(curl -s \
@@ -212,8 +212,8 @@ jobs:
           HARBOR_HOST="${{ env.HARBOR_REGISTRY }}"
           HARBOR_HOST=$(echo "$HARBOR_HOST" | sed 's|^https://||' | sed 's|^http://||' | sed 's|/$||')
           
-          # Construct the artifacts API URL using the configurable tag
-          ARTIFACTS_API_URL="https://${HARBOR_HOST}/api/v2.0/projects/${{ env.HARBOR_PROJECT }}/repositories/${ENCODED_REPO_NAME}/artifacts/${SCAN_TAG}"
+          # Construct the artifacts API URL using the configurable tag with scan overview
+          ARTIFACTS_API_URL="https://${HARBOR_HOST}/api/v2.0/projects/${{ env.HARBOR_PROJECT }}/repositories/${ENCODED_REPO_NAME}/artifacts/${SCAN_TAG}?with_scan_overview=true"
           
           # Get scan results
           scan_data=$(curl -s \
@@ -276,8 +276,8 @@ jobs:
           HARBOR_HOST="${{ env.HARBOR_REGISTRY }}"
           HARBOR_HOST=$(echo "$HARBOR_HOST" | sed 's|^https://||' | sed 's|^http://||' | sed 's|/$||')
           
-          # Construct the artifacts API URL using the configurable tag
-          ARTIFACTS_API_URL="https://${HARBOR_HOST}/api/v2.0/projects/${{ env.HARBOR_PROJECT }}/repositories/${ENCODED_REPO_NAME}/artifacts/${SCAN_TAG}"
+          # Construct the artifacts API URL using the configurable tag with scan overview
+          ARTIFACTS_API_URL="https://${HARBOR_HOST}/api/v2.0/projects/${{ env.HARBOR_PROJECT }}/repositories/${ENCODED_REPO_NAME}/artifacts/${SCAN_TAG}?with_scan_overview=true"
           
           # Get scan data to extract report_id
           scan_data=$(curl -s \
