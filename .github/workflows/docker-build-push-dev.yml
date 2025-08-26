@@ -93,7 +93,7 @@ jobs:
       HARBOR_REGISTRY: ${{ needs.build-and-push-dev.outputs.registry }}
       HARBOR_PROJECT: ${{ needs.build-and-push-dev.outputs.project }}
       HARBOR_IMAGE: ${{ needs.build-and-push-dev.outputs.image }}
-      # For testing purposes, scan the 'latest' tag instead of 'dev'
+      # Scan the 'dev' tag that was just built and pushed
       SCAN_TAG: dev
 
     steps:
@@ -113,20 +113,15 @@ jobs:
           
           echo "Debug: Scan API URL = $SCAN_API_URL"
           
-          # Set credentials as environment variables for debugging
-          HARBOR_USERNAME="${{ secrets.HARBOR_USERNAME }}"
-          HARBOR_PASSWORD="${{ secrets.HARBOR_PASSWORD }}"
-          
           # Debug: Check if credentials are available (without exposing them)
           echo "Debug: Username length = ${#HARBOR_USERNAME}"
           echo "Debug: Password length = ${#HARBOR_PASSWORD}"
           echo "Debug: Username starts with = ${HARBOR_USERNAME:0:3}..."
           
-          # Use printf to handle special characters like $ in username safely
-          # Use single quotes to prevent bash expansion of $
+          # Use the secrets directly in curl to avoid bash expansion of $ character
           response_code=$(curl -s -w "%{http_code}" -o /tmp/scan_response.json \
             -X POST \
-            -u "${HARBOR_USERNAME}:${HARBOR_PASSWORD}" \
+            -u "${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}" \
             -H "Content-Type: application/json" \
             -H "User-Agent: GitHub-Actions-Workflow" \
             --verbose \
@@ -144,23 +139,16 @@ jobs:
           elif [ "$response_code" = "409" ]; then
             echo "⚠️ Scan already in progress or recently completed"
           elif [ "$response_code" = "401" ]; then
-            echo "⚠️ Unauthorized to trigger scan - user may not have scan permissions"
-            echo "ℹ️ Image was successfully pushed to Harbor, scan will be handled manually if needed"
-            # Set a variable to skip the waiting step
-            echo "SCAN_SKIPPED=true" >> $GITHUB_ENV
+            echo "❌ UNAUTHORIZED: Failed to trigger scan - authentication failed"
+            echo "This indicates an issue with the Harbor robot account credentials or permissions"
+            exit 1
           else
-            echo "⚠️ Scan trigger returned HTTP $response_code"
+            echo "❌ Scan trigger failed with HTTP $response_code"
+            exit 1
           fi
 
       - name: Wait for scan completion
         run: |
-          # Skip if scanning was not authorized
-          if [ "$SCAN_SKIPPED" = "true" ]; then
-            echo "ℹ️ Skipping scan wait - scan trigger was unauthorized"
-            echo "✅ Workflow completed successfully (image pushed, scan skipped)"
-            exit 0
-          fi
-          
           echo "Waiting for vulnerability scan to complete..."
           max_attempts=30
           attempt=0
@@ -220,10 +208,10 @@ jobs:
       - name: Get vulnerability scan results
         id: scan_results
         run: |
-          # Skip if scanning was skipped or incomplete
-          if [ "$SCAN_SKIPPED" = "true" ] || [ "$SCAN_INCOMPLETE" = "true" ]; then
-            echo "ℹ️ Skipping scan results - scan was not completed"
-            echo "scan_status=skipped" >> $GITHUB_OUTPUT
+          # Skip if scanning was incomplete
+          if [ "$SCAN_INCOMPLETE" = "true" ]; then
+            echo "ℹ️ Skipping scan results - scan was not completed within timeout"
+            echo "scan_status=timeout" >> $GITHUB_OUTPUT
             exit 0
           fi
           
@@ -296,10 +284,10 @@ jobs:
           high=${{ steps.scan_results.outputs.high }}
           scan_status="${{ steps.scan_results.outputs.scan_status }}"
           
-          # Skip if scanning was skipped
-          if [ "$scan_status" = "skipped" ]; then
-            echo "ℹ️ Skipping vulnerability threshold check - scan was not completed"
-            echo "✅ Workflow completed successfully (image pushed, scan skipped)"
+          # Skip if scanning timed out
+          if [ "$scan_status" = "timeout" ]; then
+            echo "ℹ️ Skipping vulnerability threshold check - scan timed out"
+            echo "✅ Workflow completed successfully (image pushed, scan timed out)"
             exit 0
           fi
           
