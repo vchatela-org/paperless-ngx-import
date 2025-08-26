@@ -302,7 +302,40 @@ jobs:
           if [ "$report_id" != "null" ] && [ -n "$report_id" ]; then
             echo "Found scan report ID: $report_id"
             
-            # Construct the scan log API URL
+            # Get the vulnerability report (actual findings)
+            REPORT_URL="https://${HARBOR_HOST}/api/v2.0/projects/${{ env.HARBOR_PROJECT }}/repositories/${ENCODED_REPO_NAME}/artifacts/${SCAN_TAG}/additions/vulnerabilities"
+            
+            echo "Retrieving vulnerability report from: $REPORT_URL"
+            
+            # Get vulnerability report with error handling
+            vuln_report=$(curl -s -w "HTTP_STATUS:%{http_code}" \
+              -u "${HARBOR_USERNAME}:${HARBOR_PASSWORD}" \
+              "$REPORT_URL" 2>/dev/null || echo "")
+            
+            # Extract HTTP status and body for vulnerability report
+            if echo "$vuln_report" | grep -q "HTTP_STATUS:"; then
+              http_status=$(echo "$vuln_report" | grep -o "HTTP_STATUS:[0-9]*" | cut -d: -f2)
+              vuln_content=$(echo "$vuln_report" | sed 's/HTTP_STATUS:[0-9]*$//')
+              
+              if [ "$http_status" = "200" ] && [ -n "$vuln_content" ]; then
+                echo "📋 Vulnerability Report:"
+                echo "$vuln_content" | jq . 2>/dev/null || echo "$vuln_content"
+                
+                # Add vulnerability report to step summary
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo "## 📋 Vulnerability Report" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
+                echo "$vuln_content" | jq . 2>/dev/null >> $GITHUB_STEP_SUMMARY || echo "$vuln_content" >> $GITHUB_STEP_SUMMARY
+                echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+              else
+                echo "⚠️ Vulnerability report not available (HTTP $http_status)"
+              fi
+            else
+              echo "⚠️ Unable to retrieve vulnerability report"
+            fi
+            
+            # Also get scan logs for debugging
             SCAN_LOG_URL="https://${HARBOR_HOST}/api/v2.0/projects/${{ env.HARBOR_PROJECT }}/repositories/${ENCODED_REPO_NAME}/artifacts/${SCAN_TAG}/scan/${report_id}/log"
             
             echo "Retrieving scan logs from: $SCAN_LOG_URL"
@@ -312,18 +345,18 @@ jobs:
               -u "${HARBOR_USERNAME}:${HARBOR_PASSWORD}" \
               "$SCAN_LOG_URL" 2>/dev/null || echo "")
             
-            # Extract HTTP status and body
+            # Extract HTTP status and body for scan logs
             if echo "$scan_logs" | grep -q "HTTP_STATUS:"; then
               http_status=$(echo "$scan_logs" | grep -o "HTTP_STATUS:[0-9]*" | cut -d: -f2)
               log_content=$(echo "$scan_logs" | sed 's/HTTP_STATUS:[0-9]*$//')
               
               if [ "$http_status" = "200" ] && [ -n "$log_content" ]; then
-                echo "📋 Vulnerability Scan Logs:"
+                echo "📋 Scan Debug Logs:"
                 echo "$log_content"
                 
                 # Add logs to step summary
                 echo "" >> $GITHUB_STEP_SUMMARY
-                echo "## 📋 Scan Logs" >> $GITHUB_STEP_SUMMARY
+                echo "## 📋 Scan Debug Logs" >> $GITHUB_STEP_SUMMARY
                 echo "" >> $GITHUB_STEP_SUMMARY
                 echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
                 echo "$log_content" >> $GITHUB_STEP_SUMMARY
