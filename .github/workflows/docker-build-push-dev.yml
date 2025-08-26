@@ -248,21 +248,6 @@ jobs:
             echo "total=$total" >> $GITHUB_OUTPUT
             echo "scan_status=$scan_status" >> $GITHUB_OUTPUT
           fi
-          
-          # Create summary
-          echo "## 🛡️ Vulnerability Scan Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Image:** \`${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/${{ env.HARBOR_IMAGE }}:${SCAN_TAG}\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
-          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| 🔴 Critical | ${critical:-0} |" >> $GITHUB_STEP_SUMMARY
-          echo "| 🟠 High | ${high:-0} |" >> $GITHUB_STEP_SUMMARY
-          echo "| 🟡 Medium | ${medium:-0} |" >> $GITHUB_STEP_SUMMARY
-          echo "| 🔵 Low | ${low:-0} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Total** | **${total:-0}** |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Scan Status:** ${scan_status:-Unknown}" >> $GITHUB_STEP_SUMMARY
 
       - name: Get scan logs
         if: always()
@@ -318,105 +303,147 @@ jobs:
               vuln_content=$(echo "$vuln_report" | sed 's/HTTP_STATUS:[0-9]*$//')
               
               if [ "$http_status" = "200" ] && [ -n "$vuln_content" ]; then
-                echo "📋 Vulnerability Report:"
-                echo "$vuln_content" | jq . 2>/dev/null || echo "$vuln_content"
+                echo "📋 Vulnerability Report Retrieved Successfully"
                 
-                # Add vulnerability report to step summary
+                # Parse vulnerability counts by severity
+                critical_count=$(echo "$vuln_content" | jq '[."application/vnd.security.vulnerability.report; version=1.1".vulnerabilities[]? | select(.severity == "Critical")] | length' 2>/dev/null || echo "0")
+                high_count=$(echo "$vuln_content" | jq '[."application/vnd.security.vulnerability.report; version=1.1".vulnerabilities[]? | select(.severity == "High")] | length' 2>/dev/null || echo "0")
+                medium_count=$(echo "$vuln_content" | jq '[."application/vnd.security.vulnerability.report; version=1.1".vulnerabilities[]? | select(.severity == "Medium")] | length' 2>/dev/null || echo "0")
+                low_count=$(echo "$vuln_content" | jq '[."application/vnd.security.vulnerability.report; version=1.1".vulnerabilities[]? | select(.severity == "Low")] | length' 2>/dev/null || echo "0")
+                total_count=$(echo "$vuln_content" | jq '."application/vnd.security.vulnerability.report; version=1.1".vulnerabilities | length' 2>/dev/null || echo "0")
+                
+                echo "Vulnerability Summary:"
+                echo "  Critical: $critical_count"
+                echo "  High: $high_count"
+                echo "  Medium: $medium_count"
+                echo "  Low: $low_count"
+                echo "  Total: $total_count"
+                
+                # Save vulnerability counts to temporary files for use in scan results step
+                echo "$critical_count" > /tmp/vuln_critical
+                echo "$high_count" > /tmp/vuln_high
+                echo "$medium_count" > /tmp/vuln_medium
+                echo "$low_count" > /tmp/vuln_low
+                echo "$total_count" > /tmp/vuln_total
+                
+                # Add detailed vulnerability report to step summary (limited to first 50 to avoid huge outputs)
                 echo "" >> $GITHUB_STEP_SUMMARY
-                echo "## 📋 Vulnerability Report" >> $GITHUB_STEP_SUMMARY
+                echo "## 📋 Vulnerability Report Details" >> $GITHUB_STEP_SUMMARY
                 echo "" >> $GITHUB_STEP_SUMMARY
-                echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
-                echo "$vuln_content" | jq . 2>/dev/null >> $GITHUB_STEP_SUMMARY || echo "$vuln_content" >> $GITHUB_STEP_SUMMARY
-                echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+                echo "### Summary" >> $GITHUB_STEP_SUMMARY
+                echo "- **Critical**: $critical_count" >> $GITHUB_STEP_SUMMARY
+                echo "- **High**: $high_count" >> $GITHUB_STEP_SUMMARY
+                echo "- **Medium**: $medium_count" >> $GITHUB_STEP_SUMMARY
+                echo "- **Low**: $low_count" >> $GITHUB_STEP_SUMMARY
+                echo "- **Total**: $total_count" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+                
+                # Show top 10 highest severity vulnerabilities
+                if [ "$total_count" -gt "0" ]; then
+                  echo "### Top Critical and High Severity Vulnerabilities" >> $GITHUB_STEP_SUMMARY
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "| CVE | Severity | Package | Version | Description |" >> $GITHUB_STEP_SUMMARY
+                  echo "|-----|----------|---------|---------|-------------|" >> $GITHUB_STEP_SUMMARY
+                  echo "$vuln_content" | jq -r '."application/vnd.security.vulnerability.report; version=1.1".vulnerabilities[]? | select(.severity == "Critical" or .severity == "High") | "| " + .id + " | " + .severity + " | " + .package + " | " + .version + " | " + (.description | .[0:100]) + "... |"' 2>/dev/null | head -10 >> $GITHUB_STEP_SUMMARY || echo "| No Critical/High vulnerabilities | | | | |" >> $GITHUB_STEP_SUMMARY
+                fi
               else
                 echo "⚠️ Vulnerability report not available (HTTP $http_status)"
+                # Set default values
+                echo "0" > /tmp/vuln_critical
+                echo "0" > /tmp/vuln_high
+                echo "0" > /tmp/vuln_medium
+                echo "0" > /tmp/vuln_low
+                echo "0" > /tmp/vuln_total
               fi
             else
               echo "⚠️ Unable to retrieve vulnerability report"
+              # Set default values
+              echo "0" > /tmp/vuln_critical
+              echo "0" > /tmp/vuln_high
+              echo "0" > /tmp/vuln_medium
+              echo "0" > /tmp/vuln_low
+              echo "0" > /tmp/vuln_total
             fi
-            
-            # Also get scan logs for debugging
-            SCAN_LOG_URL="https://${HARBOR_HOST}/api/v2.0/projects/${{ env.HARBOR_PROJECT }}/repositories/${ENCODED_REPO_NAME}/artifacts/${SCAN_TAG}/scan/${report_id}/log"
-            
-            echo "Retrieving scan logs from: $SCAN_LOG_URL"
-            
-            # Get scan logs with error handling
-            scan_logs=$(curl -s -w "HTTP_STATUS:%{http_code}" \
-              -u "${HARBOR_USERNAME}:${HARBOR_PASSWORD}" \
-              "$SCAN_LOG_URL" 2>/dev/null || echo "")
-            
-            # Extract HTTP status and body for scan logs
-            if echo "$scan_logs" | grep -q "HTTP_STATUS:"; then
-              http_status=$(echo "$scan_logs" | grep -o "HTTP_STATUS:[0-9]*" | cut -d: -f2)
-              log_content=$(echo "$scan_logs" | sed 's/HTTP_STATUS:[0-9]*$//')
-              
-              if [ "$http_status" = "200" ] && [ -n "$log_content" ]; then
-                echo "📋 Scan Debug Logs:"
-                echo "$log_content"
-                
-                # Add logs to step summary
-                echo "" >> $GITHUB_STEP_SUMMARY
-                echo "## 📋 Scan Debug Logs" >> $GITHUB_STEP_SUMMARY
-                echo "" >> $GITHUB_STEP_SUMMARY
-                echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-                echo "$log_content" >> $GITHUB_STEP_SUMMARY
-                echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-              else
-                echo "⚠️ Scan logs not available yet (HTTP $http_status)"
-              fi
-            else
-              echo "⚠️ Unable to retrieve scan logs"
-            fi
+          fi
+          
+        env:
+          HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
+          HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Add final scan summary
+        if: always()
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🔒 Final Security Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** ${{ needs.build-and-push-dev.outputs.image }}:dev" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Read vulnerability counts from temporary files
+          critical_count=$(cat /tmp/vuln_critical 2>/dev/null || echo "0")
+          high_count=$(cat /tmp/vuln_high 2>/dev/null || echo "0")
+          medium_count=$(cat /tmp/vuln_medium 2>/dev/null || echo "0")
+          low_count=$(cat /tmp/vuln_low 2>/dev/null || echo "0")
+          total_count=$(cat /tmp/vuln_total 2>/dev/null || echo "0")
+          
+          echo "### Final Vulnerability Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔴 Critical | $critical_count |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🟠 High | $high_count |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🟡 Medium | $medium_count |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔵 Low | $low_count |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Total** | **$total_count** |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Add security status based on findings
+          if [ "$critical_count" -gt "0" ] || [ "$high_count" -gt "0" ]; then
+            echo "⚠️ **Security Alert:** Found $critical_count Critical and $high_count High severity vulnerabilities" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          elif [ "$medium_count" -gt "0" ]; then
+            echo "⚡ **Medium Risk:** Found $medium_count Medium severity vulnerabilities" >> $GITHUB_STEP_SUMMARY  
+            echo "" >> $GITHUB_STEP_SUMMARY
+          elif [ "$low_count" -gt "0" ]; then
+            echo "✅ **Low Risk:** Only $low_count Low severity vulnerabilities found" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
           else
-            echo "⚠️ Could not find scan report ID in scan overview"
-            echo "Available scan overview data:"
-            echo "$scan_data" | jq -r '.scan_overview // "No scan_overview found"'
+            echo "🎉 **No vulnerabilities found!**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
           fi
 
       - name: Check vulnerability thresholds
         run: |
           echo "Checking vulnerability thresholds..."
           
-          critical=${{ steps.scan_results.outputs.critical }}
-          high=${{ steps.scan_results.outputs.high }}
-          scan_status="${{ steps.scan_results.outputs.scan_status }}"
-          
-          # Skip if scanning timed out
-          if [ "$scan_status" = "timeout" ]; then
-            echo "ℹ️ Skipping vulnerability threshold check - scan timed out"
-            echo "✅ Workflow completed successfully (image pushed, scan timed out)"
-            exit 0
-          fi
+          # Read vulnerability counts from temporary files
+          critical_count=$(cat /tmp/vuln_critical 2>/dev/null || echo "0")
+          high_count=$(cat /tmp/vuln_high 2>/dev/null || echo "0")
           
           # Define your acceptable thresholds here
           max_critical=0
           max_high=5
           
-          echo "Critical vulnerabilities: $critical (threshold: $max_critical)"
-          echo "High vulnerabilities: $high (threshold: $max_high)"
-          echo "Scan status: $scan_status"
+          echo "Critical vulnerabilities: $critical_count (threshold: $max_critical)"
+          echo "High vulnerabilities: $high_count (threshold: $max_high)"
           
-          # Only check thresholds if scan was successful
-          if [ "$scan_status" = "Success" ]; then
-            if [ "$critical" -gt "$max_critical" ]; then
-              echo "❌ FAIL: Critical vulnerabilities ($critical) exceed threshold ($max_critical)"
-              exit 1
-            fi
-            
-            if [ "$high" -gt "$max_high" ]; then
-              echo "❌ FAIL: High vulnerabilities ($high) exceed threshold ($max_high)"
-              exit 1
-            fi
-            
-            echo "✅ PASS: Vulnerability levels are within acceptable thresholds"
-          else
-            echo "⚠️ WARNING: Scan status is '$scan_status' - skipping threshold checks"
+          # Check thresholds
+          if [ "$critical_count" -gt "$max_critical" ]; then
+            echo "❌ FAIL: Critical vulnerabilities ($critical_count) exceed threshold ($max_critical)"
+            exit 1
           fi
+          
+          if [ "$high_count" -gt "$max_high" ]; then
+            echo "❌ FAIL: High vulnerabilities ($high_count) exceed threshold ($max_high)"
+            exit 1
+          fi
+          
+          echo "✅ PASS: Vulnerability levels are within acceptable thresholds"
 
       - name: Cleanup
         if: always()
         run: |
           echo "Cleaning up temporary files..."
-          rm -f /tmp/artifact_response.json /tmp/scan_response.json skopeo
+          rm -f /tmp/artifact_response.json /tmp/scan_response.json /tmp/vuln_* skopeo
           echo "✅ Cleanup completed"
 
