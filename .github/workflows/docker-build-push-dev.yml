@@ -107,9 +107,10 @@ jobs:
           echo "Debug: Username starts with = ${HARBOR_USERNAME:0:3}..."
           
           # Use printf to handle special characters like $ in username safely
+          # Use single quotes to prevent bash expansion of $
           response_code=$(curl -s -w "%{http_code}" -o /tmp/scan_response.json \
             -X POST \
-            --user "${HARBOR_USERNAME}:${HARBOR_PASSWORD}" \
+            -u "${HARBOR_USERNAME}:${HARBOR_PASSWORD}" \
             -H "Content-Type: application/json" \
             -H "User-Agent: GitHub-Actions-Workflow" \
             --verbose \
