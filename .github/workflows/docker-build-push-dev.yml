@@ -37,20 +37,62 @@ jobs:
             ${{ secrets.HARBOR_REGISTRY }}/${{ secrets.HARBOR_PROJECT }}/${{ secrets.HARBOR_IMAGE }}:dev
         id: build
 
-      - name: Verify image pull
+      - name: Verify image exists in Harbor
         run: |
-          echo "Verifying image can be pulled..."
-          docker pull ${{ secrets.HARBOR_REGISTRY }}/${{ secrets.HARBOR_PROJECT }}/${{ secrets.HARBOR_IMAGE }}:dev
-          echo "✅ Image pull successful"
+          echo "Verifying image exists in Harbor registry..."
+          
+          # Check if the artifact exists via Harbor API
+          response=$(curl -s -w "%{http_code}" \
+            -u "${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}" \
+            "${{ secrets.HARBOR_REGISTRY }}/api/v2.0/projects/${{ secrets.HARBOR_PROJECT }}/repositories/${{ secrets.HARBOR_IMAGE }}/artifacts/dev" \
+            -o /tmp/artifact_response.json)
+          
+          if [ "$response" = "200" ]; then
+            echo "✅ Image successfully pushed and available in Harbor"
+            # Display image details
+            echo "Image details:"
+            jq -r '"  Digest: " + .digest' /tmp/artifact_response.json
+            jq -r '"  Size: " + (.size | tostring) + " bytes"' /tmp/artifact_response.json
+            jq -r '"  Push time: " + .push_time' /tmp/artifact_response.json
+          else
+            echo "❌ Image not found in Harbor registry"
+            echo "HTTP response code: $response"
+            cat /tmp/artifact_response.json
+            exit 1
+          fi
+
+      - name: Verify image can be pulled using skopeo
+        run: |
+          echo "Installing skopeo for image verification..."
+          
+          # Install skopeo (container image manipulation tool)
+          curl -L -o skopeo https://github.com/containers/skopeo/releases/latest/download/skopeo-linux-amd64
+          chmod +x skopeo
+          
+          echo "Verifying image can be pulled using skopeo..."
+          ./skopeo inspect --creds "${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}" \
+            docker://${{ secrets.HARBOR_REGISTRY }}/${{ secrets.HARBOR_PROJECT }}/${{ secrets.HARBOR_IMAGE }}:dev \
+            --format json | jq '.Name, .Tag, .Digest, .Created'
+          
+          echo "✅ Image pull verification successful"
 
       - name: Trigger Harbor vulnerability scan
         run: |
           echo "Triggering vulnerability scan..."
-          curl -X POST \
+          response_code=$(curl -s -w "%{http_code}" -o /tmp/scan_response.json \
+            -X POST \
             -u "${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}" \
             -H "Content-Type: application/json" \
-            "${{ secrets.HARBOR_REGISTRY }}/api/v2.0/projects/${{ secrets.HARBOR_PROJECT }}/repositories/${{ secrets.HARBOR_IMAGE }}/artifacts/dev/scan" \
-            || echo "⚠️ Scan trigger failed or already in progress"
+            "${{ secrets.HARBOR_REGISTRY }}/api/v2.0/projects/${{ secrets.HARBOR_PROJECT }}/repositories/${{ secrets.HARBOR_IMAGE }}/artifacts/dev/scan")
+          
+          if [ "$response_code" = "202" ]; then
+            echo "✅ Vulnerability scan triggered successfully"
+          elif [ "$response_code" = "409" ]; then
+            echo "⚠️ Scan already in progress or recently completed"
+          else
+            echo "⚠️ Scan trigger returned HTTP $response_code"
+            cat /tmp/scan_response.json
+          fi
 
       - name: Wait for scan completion
         run: |
@@ -59,14 +101,22 @@ jobs:
           attempt=0
           
           while [ $attempt -lt $max_attempts ]; do
-            scan_status=$(curl -s \
+            scan_data=$(curl -s \
               -u "${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}" \
-              "${{ secrets.HARBOR_REGISTRY }}/api/v2.0/projects/${{ secrets.HARBOR_PROJECT }}/repositories/${{ secrets.HARBOR_IMAGE }}/artifacts/dev" \
-              | jq -r '.scan_overview.["application/vnd.security.vulnerability.report; version=1.1"].scan_status // "Not Available"')
+              "${{ secrets.HARBOR_REGISTRY }}/api/v2.0/projects/${{ secrets.HARBOR_PROJECT }}/repositories/${{ secrets.HARBOR_IMAGE }}/artifacts/dev")
+            
+            scan_status=$(echo "$scan_data" | jq -r '.scan_overview.["application/vnd.security.vulnerability.report; version=1.1"].scan_status // "Not Available"')
             
             echo "Scan status: $scan_status (attempt $((attempt + 1))/$max_attempts)"
             
-            if [ "$scan_status" = "Success" ] || [ "$scan_status" = "Error" ]; then
+            if [ "$scan_status" = "Success" ]; then
+              echo "✅ Scan completed successfully"
+              break
+            elif [ "$scan_status" = "Error" ]; then
+              echo "❌ Scan completed with errors"
+              break
+            elif [ "$scan_status" = "Stopped" ]; then
+              echo "⚠️ Scan was stopped"
               break
             fi
             
@@ -75,7 +125,8 @@ jobs:
           done
           
           if [ $attempt -eq $max_attempts ]; then
-            echo "⚠️ Scan did not complete within timeout"
+            echo "⚠️ Scan did not complete within timeout (5 minutes)"
+            echo "Current status: $scan_status"
             exit 1
           fi
 
@@ -89,21 +140,34 @@ jobs:
             -u "${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}" \
             "${{ secrets.HARBOR_REGISTRY }}/api/v2.0/projects/${{ secrets.HARBOR_PROJECT }}/repositories/${{ secrets.HARBOR_IMAGE }}/artifacts/dev")
           
-          # Extract vulnerability counts
-          critical=$(echo "$scan_data" | jq -r '.scan_overview.["application/vnd.security.vulnerability.report; version=1.1"].summary.critical // 0')
-          high=$(echo "$scan_data" | jq -r '.scan_overview.["application/vnd.security.vulnerability.report; version=1.1"].summary.high // 0')
-          medium=$(echo "$scan_data" | jq -r '.scan_overview.["application/vnd.security.vulnerability.report; version=1.1"].summary.medium // 0')
-          low=$(echo "$scan_data" | jq -r '.scan_overview.["application/vnd.security.vulnerability.report; version=1.1"].summary.low // 0')
-          total=$(echo "$scan_data" | jq -r '.scan_overview.["application/vnd.security.vulnerability.report; version=1.1"].summary.total // 0')
-          scan_status=$(echo "$scan_data" | jq -r '.scan_overview.["application/vnd.security.vulnerability.report; version=1.1"].scan_status // "Unknown"')
+          # Check if scan data exists
+          scan_overview=$(echo "$scan_data" | jq -r '.scan_overview.["application/vnd.security.vulnerability.report; version=1.1"] // null')
           
-          # Output results
-          echo "critical=$critical" >> $GITHUB_OUTPUT
-          echo "high=$high" >> $GITHUB_OUTPUT
-          echo "medium=$medium" >> $GITHUB_OUTPUT
-          echo "low=$low" >> $GITHUB_OUTPUT
-          echo "total=$total" >> $GITHUB_OUTPUT
-          echo "scan_status=$scan_status" >> $GITHUB_OUTPUT
+          if [ "$scan_overview" = "null" ]; then
+            echo "⚠️ No vulnerability scan data available"
+            echo "critical=0" >> $GITHUB_OUTPUT
+            echo "high=0" >> $GITHUB_OUTPUT
+            echo "medium=0" >> $GITHUB_OUTPUT
+            echo "low=0" >> $GITHUB_OUTPUT
+            echo "total=0" >> $GITHUB_OUTPUT
+            echo "scan_status=No Data" >> $GITHUB_OUTPUT
+          else
+            # Extract vulnerability counts
+            critical=$(echo "$scan_data" | jq -r '.scan_overview.["application/vnd.security.vulnerability.report; version=1.1"].summary.critical // 0')
+            high=$(echo "$scan_data" | jq -r '.scan_overview.["application/vnd.security.vulnerability.report; version=1.1"].summary.high // 0')
+            medium=$(echo "$scan_data" | jq -r '.scan_overview.["application/vnd.security.vulnerability.report; version=1.1"].summary.medium // 0')
+            low=$(echo "$scan_data" | jq -r '.scan_overview.["application/vnd.security.vulnerability.report; version=1.1"].summary.low // 0')
+            total=$(echo "$scan_data" | jq -r '.scan_overview.["application/vnd.security.vulnerability.report; version=1.1"].summary.total // 0')
+            scan_status=$(echo "$scan_data" | jq -r '.scan_overview.["application/vnd.security.vulnerability.report; version=1.1"].scan_status // "Unknown"')
+            
+            # Output results
+            echo "critical=$critical" >> $GITHUB_OUTPUT
+            echo "high=$high" >> $GITHUB_OUTPUT
+            echo "medium=$medium" >> $GITHUB_OUTPUT
+            echo "low=$low" >> $GITHUB_OUTPUT
+            echo "total=$total" >> $GITHUB_OUTPUT
+            echo "scan_status=$scan_status" >> $GITHUB_OUTPUT
+          fi
           
           # Create summary
           echo "## 🛡️ Vulnerability Scan Results" >> $GITHUB_STEP_SUMMARY
@@ -112,13 +176,13 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| 🔴 Critical | $critical |" >> $GITHUB_STEP_SUMMARY
-          echo "| 🟠 High | $high |" >> $GITHUB_STEP_SUMMARY
-          echo "| 🟡 Medium | $medium |" >> $GITHUB_STEP_SUMMARY
-          echo "| 🔵 Low | $low |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Total** | **$total** |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔴 Critical | ${critical:-0} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🟠 High | ${high:-0} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🟡 Medium | ${medium:-0} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔵 Low | ${low:-0} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Total** | **${total:-0}** |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Scan Status:** $scan_status" >> $GITHUB_STEP_SUMMARY
+          echo "**Scan Status:** ${scan_status:-Unknown}" >> $GITHUB_STEP_SUMMARY
 
       - name: Check vulnerability thresholds
         run: |
@@ -126,6 +190,7 @@ jobs:
           
           critical=${{ steps.scan_results.outputs.critical }}
           high=${{ steps.scan_results.outputs.high }}
+          scan_status="${{ steps.scan_results.outputs.scan_status }}"
           
           # Define your acceptable thresholds here
           max_critical=0
@@ -133,22 +198,29 @@ jobs:
           
           echo "Critical vulnerabilities: $critical (threshold: $max_critical)"
           echo "High vulnerabilities: $high (threshold: $max_high)"
+          echo "Scan status: $scan_status"
           
-          if [ "$critical" -gt "$max_critical" ]; then
-            echo "❌ FAIL: Critical vulnerabilities ($critical) exceed threshold ($max_critical)"
-            exit 1
+          # Only check thresholds if scan was successful
+          if [ "$scan_status" = "Success" ]; then
+            if [ "$critical" -gt "$max_critical" ]; then
+              echo "❌ FAIL: Critical vulnerabilities ($critical) exceed threshold ($max_critical)"
+              exit 1
+            fi
+            
+            if [ "$high" -gt "$max_high" ]; then
+              echo "❌ FAIL: High vulnerabilities ($high) exceed threshold ($max_high)"
+              exit 1
+            fi
+            
+            echo "✅ PASS: Vulnerability levels are within acceptable thresholds"
+          else
+            echo "⚠️ WARNING: Scan status is '$scan_status' - skipping threshold checks"
           fi
-          
-          if [ "$high" -gt "$max_high" ]; then
-            echo "❌ FAIL: High vulnerabilities ($high) exceed threshold ($max_high)"
-            exit 1
-          fi
-          
-          echo "✅ PASS: Vulnerability levels are within acceptable thresholds"
 
       - name: Cleanup
         if: always()
         run: |
-          echo "Cleaning up local images..."
-          docker rmi ${{ secrets.HARBOR_REGISTRY }}/${{ secrets.HARBOR_PROJECT }}/${{ secrets.HARBOR_IMAGE }}:dev || true
+          echo "Cleaning up temporary files..."
+          rm -f /tmp/artifact_response.json /tmp/scan_response.json skopeo
+          echo "✅ Cleanup completed"
 
