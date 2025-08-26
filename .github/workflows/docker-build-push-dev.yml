@@ -11,6 +11,11 @@ jobs:
       HARBOR_REGISTRY: ${{ vars.HARBOR_REGISTRY }}
       HARBOR_PROJECT: ${{ vars.HARBOR_PROJECT }}
       HARBOR_IMAGE: ${{ vars.HARBOR_IMAGE }}
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}
+      registry: ${{ env.HARBOR_REGISTRY }}
+      project: ${{ env.HARBOR_PROJECT }}
+      image: ${{ env.HARBOR_IMAGE }}
 
     steps:
       - name: Checkout code
@@ -81,9 +86,20 @@ jobs:
             exit 1
           fi
 
+  vulnerability-scan:
+    runs-on: arc-runner-set
+    needs: build-and-push-dev
+    env:
+      HARBOR_REGISTRY: ${{ needs.build-and-push-dev.outputs.registry }}
+      HARBOR_PROJECT: ${{ needs.build-and-push-dev.outputs.project }}
+      HARBOR_IMAGE: ${{ needs.build-and-push-dev.outputs.image }}
+      # For testing purposes, scan the 'latest' tag instead of 'dev'
+      SCAN_TAG: dev
+
+    steps:
       - name: Trigger Harbor vulnerability scan
         run: |
-          echo "Triggering vulnerability scan..."
+          echo "Triggering vulnerability scan for tag: $SCAN_TAG"
           
           # URL encode the repository name for Harbor API
           ENCODED_REPO_NAME=$(echo "${{ env.HARBOR_IMAGE }}" | sed 's|/|%2F|g')
@@ -92,8 +108,8 @@ jobs:
           HARBOR_HOST="${{ env.HARBOR_REGISTRY }}"
           HARBOR_HOST=$(echo "$HARBOR_HOST" | sed 's|^https://||' | sed 's|^http://||' | sed 's|/$||')
           
-          # Construct the scan API URL
-          SCAN_API_URL="https://${HARBOR_HOST}/api/v2.0/projects/${{ env.HARBOR_PROJECT }}/repositories/${ENCODED_REPO_NAME}/artifacts/dev/scan"
+          # Construct the scan API URL using the configurable tag
+          SCAN_API_URL="https://${HARBOR_HOST}/api/v2.0/projects/${{ env.HARBOR_PROJECT }}/repositories/${ENCODED_REPO_NAME}/artifacts/${SCAN_TAG}/scan"
           
           echo "Debug: Scan API URL = $SCAN_API_URL"
           
@@ -156,8 +172,8 @@ jobs:
           HARBOR_HOST="${{ env.HARBOR_REGISTRY }}"
           HARBOR_HOST=$(echo "$HARBOR_HOST" | sed 's|^https://||' | sed 's|^http://||' | sed 's|/$||')
           
-          # Construct the artifacts API URL
-          ARTIFACTS_API_URL="https://${HARBOR_HOST}/api/v2.0/projects/${{ env.HARBOR_PROJECT }}/repositories/${ENCODED_REPO_NAME}/artifacts/dev"
+          # Construct the artifacts API URL using the configurable tag
+          ARTIFACTS_API_URL="https://${HARBOR_HOST}/api/v2.0/projects/${{ env.HARBOR_PROJECT }}/repositories/${ENCODED_REPO_NAME}/artifacts/${SCAN_TAG}"
           
           while [ $attempt -lt $max_attempts ]; do
             scan_data=$(curl -s \
@@ -220,8 +236,8 @@ jobs:
           HARBOR_HOST="${{ env.HARBOR_REGISTRY }}"
           HARBOR_HOST=$(echo "$HARBOR_HOST" | sed 's|^https://||' | sed 's|^http://||' | sed 's|/$||')
           
-          # Construct the artifacts API URL
-          ARTIFACTS_API_URL="https://${HARBOR_HOST}/api/v2.0/projects/${{ env.HARBOR_PROJECT }}/repositories/${ENCODED_REPO_NAME}/artifacts/dev"
+          # Construct the artifacts API URL using the configurable tag
+          ARTIFACTS_API_URL="https://${HARBOR_HOST}/api/v2.0/projects/${{ env.HARBOR_PROJECT }}/repositories/${ENCODED_REPO_NAME}/artifacts/${SCAN_TAG}"
           
           # Get scan results
           scan_data=$(curl -s \
@@ -260,7 +276,7 @@ jobs:
           # Create summary
           echo "## 🛡️ Vulnerability Scan Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Image:** \`${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/${{ env.HARBOR_IMAGE }}:dev\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** \`${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/${{ env.HARBOR_IMAGE }}:${SCAN_TAG}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
