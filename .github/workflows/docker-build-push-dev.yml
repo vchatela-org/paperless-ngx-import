@@ -93,6 +93,8 @@ jobs:
       HARBOR_REGISTRY: ${{ needs.build-and-push-dev.outputs.registry }}
       HARBOR_PROJECT: ${{ needs.build-and-push-dev.outputs.project }}
       HARBOR_IMAGE: ${{ needs.build-and-push-dev.outputs.image }}
+      HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
+      HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
       # Scan the 'dev' tag that was just built and pushed
       SCAN_TAG: dev
 
@@ -118,10 +120,10 @@ jobs:
           echo "Debug: Password length = ${#HARBOR_PASSWORD}"
           echo "Debug: Username starts with = ${HARBOR_USERNAME:0:3}..."
           
-          # Use the secrets directly in curl to avoid bash expansion of $ character
+          # Use the environment variables with proper escaping to preserve $ character
           response_code=$(curl -s -w "%{http_code}" -o /tmp/scan_response.json \
             -X POST \
-            -u "${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}" \
+            -u "${HARBOR_USERNAME}:${HARBOR_PASSWORD}" \
             -H "Content-Type: application/json" \
             -H "User-Agent: GitHub-Actions-Workflow" \
             --verbose \
