@@ -11,6 +11,8 @@ jobs:
       HARBOR_REGISTRY: ${{ vars.HARBOR_REGISTRY }}
       HARBOR_PROJECT: ${{ vars.HARBOR_PROJECT }}
       HARBOR_IMAGE: ${{ vars.HARBOR_IMAGE }}
+      HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
+      HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
     outputs:
       image-digest: ${{ steps.build.outputs.digest }}
       registry: ${{ env.HARBOR_REGISTRY }}
@@ -60,18 +62,11 @@ jobs:
           # Construct the API URL
           API_URL="https://${HARBOR_HOST}/api/v2.0/projects/${{ env.HARBOR_PROJECT }}/repositories/${ENCODED_REPO_NAME}/artifacts/dev"
           
-          echo "Debug: API URL = $API_URL"
-          echo "Debug: Repository name (encoded) = $ENCODED_REPO_NAME"
-          
           # Check if the artifact exists via Harbor API
           response=$(curl -s -w "%{http_code}" \
-            -u "${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}" \
+            -u "${HARBOR_USERNAME}:${HARBOR_PASSWORD}" \
             "$API_URL" \
             -o /tmp/artifact_response.json)
-          
-          echo "Debug: HTTP response code = $response"
-          echo "Debug: Response body:"
-          cat /tmp/artifact_response.json
           
           if [ "$response" = "200" ]; then
             echo "✅ Image successfully pushed and available in Harbor"
@@ -113,28 +108,13 @@ jobs:
           # Construct the scan API URL using the configurable tag
           SCAN_API_URL="https://${HARBOR_HOST}/api/v2.0/projects/${{ env.HARBOR_PROJECT }}/repositories/${ENCODED_REPO_NAME}/artifacts/${SCAN_TAG}/scan"
           
-          echo "Debug: Scan API URL = $SCAN_API_URL"
-          
-          # Debug: Check if credentials are available (without exposing them)
-          echo "Debug: Username length = ${#HARBOR_USERNAME}"
-          echo "Debug: Password length = ${#HARBOR_PASSWORD}"
-          echo "Debug: Username starts with = ${HARBOR_USERNAME:0:3}..."
-          
-          # Use the environment variables with proper escaping to preserve $ character
+          # Trigger vulnerability scan
           response_code=$(curl -s -w "%{http_code}" -o /tmp/scan_response.json \
             -X POST \
             -u "${HARBOR_USERNAME}:${HARBOR_PASSWORD}" \
             -H "Content-Type: application/json" \
             -H "User-Agent: GitHub-Actions-Workflow" \
-            --verbose \
-            "$SCAN_API_URL" 2>/tmp/curl_debug.log)
-          
-          echo "Debug: Scan HTTP response code = $response_code"
-          echo "Debug: Scan response body:"
-          cat /tmp/scan_response.json
-          echo ""
-          echo "Debug: Curl verbose output:"
-          cat /tmp/curl_debug.log
+            "$SCAN_API_URL")
           
           if [ "$response_code" = "202" ]; then
             echo "✅ Vulnerability scan triggered successfully"
@@ -146,6 +126,7 @@ jobs:
             exit 1
           else
             echo "❌ Scan trigger failed with HTTP $response_code"
+            cat /tmp/scan_response.json
             exit 1
           fi
 
@@ -167,14 +148,10 @@ jobs:
           
           while [ $attempt -lt $max_attempts ]; do
             scan_data=$(curl -s \
-              -u "${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}" \
+              -u "${HARBOR_USERNAME}:${HARBOR_PASSWORD}" \
               "$ARTIFACTS_API_URL")
             
-            # Debug: show the raw scan data structure
-            echo "Debug: Raw scan data:"
-            echo "$scan_data" | jq -r '.scan_overview // "No scan_overview found"' || echo "No valid JSON in scan_data"
-            
-            # Fix jq syntax for complex property names
+            # Extract scan status from the response
             scan_status=$(echo "$scan_data" | jq -r '.scan_overview["application/vnd.security.vulnerability.report; version=1.1"].scan_status // "Not Available"' 2>/dev/null)
             
             # If that fails, try alternative paths
@@ -231,7 +208,7 @@ jobs:
           
           # Get scan results
           scan_data=$(curl -s \
-            -u "${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}" \
+            -u "${HARBOR_USERNAME}:${HARBOR_PASSWORD}" \
             "$ARTIFACTS_API_URL")
           
           # Check if scan data exists
@@ -277,6 +254,67 @@ jobs:
           echo "| **Total** | **${total:-0}** |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Scan Status:** ${scan_status:-Unknown}" >> $GITHUB_STEP_SUMMARY
+
+      - name: Get scan logs
+        if: always()
+        run: |
+          echo "Retrieving vulnerability scan logs..."
+          
+          # URL encode the repository name for Harbor API
+          ENCODED_REPO_NAME=$(echo "${{ env.HARBOR_IMAGE }}" | sed 's|/|%2F|g')
+          
+          # Clean Harbor registry URL (remove protocol if present, and trailing slash)
+          HARBOR_HOST="${{ env.HARBOR_REGISTRY }}"
+          HARBOR_HOST=$(echo "$HARBOR_HOST" | sed 's|^https://||' | sed 's|^http://||' | sed 's|/$||')
+          
+          # Construct the artifacts API URL using the configurable tag
+          ARTIFACTS_API_URL="https://${HARBOR_HOST}/api/v2.0/projects/${{ env.HARBOR_PROJECT }}/repositories/${ENCODED_REPO_NAME}/artifacts/${SCAN_TAG}"
+          
+          # Get scan data to extract report_id
+          scan_data=$(curl -s \
+            -u "${HARBOR_USERNAME}:${HARBOR_PASSWORD}" \
+            "$ARTIFACTS_API_URL")
+          
+          # Extract report_id from scan_overview
+          report_id=$(echo "$scan_data" | jq -r '.scan_overview["application/vnd.security.vulnerability.report; version=1.1"].report_id // null' 2>/dev/null)
+          
+          # If that fails, try alternative paths
+          if [ "$report_id" = "null" ] || [ -z "$report_id" ]; then
+            report_id=$(echo "$scan_data" | jq -r '.scan_overview | to_entries[] | select(.key | contains("vulnerability")) | .value.report_id // null' 2>/dev/null)
+          fi
+          
+          if [ "$report_id" != "null" ] && [ -n "$report_id" ]; then
+            echo "Found scan report ID: $report_id"
+            
+            # Construct the scan log API URL
+            SCAN_LOG_URL="https://${HARBOR_HOST}/api/v2.0/projects/${{ env.HARBOR_PROJECT }}/repositories/${ENCODED_REPO_NAME}/artifacts/${SCAN_TAG}/scan/${report_id}/log"
+            
+            echo "Retrieving scan logs from: $SCAN_LOG_URL"
+            
+            # Get scan logs
+            scan_logs=$(curl -s \
+              -u "${HARBOR_USERNAME}:${HARBOR_PASSWORD}" \
+              "$SCAN_LOG_URL")
+            
+            if [ -n "$scan_logs" ]; then
+              echo "📋 Vulnerability Scan Logs:"
+              echo "$scan_logs"
+              
+              # Add logs to step summary
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "## 📋 Scan Logs" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+              echo "$scan_logs" >> $GITHUB_STEP_SUMMARY
+              echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "⚠️ No scan logs available"
+            fi
+          else
+            echo "⚠️ Could not find scan report ID in scan overview"
+            echo "Available scan overview data:"
+            echo "$scan_data" | jq -r '.scan_overview // "No scan_overview found"'
+          fi
 
       - name: Check vulnerability thresholds
         run: |
