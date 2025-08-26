@@ -221,7 +221,7 @@ jobs:
             "$ARTIFACTS_API_URL")
           
           # Check if scan data exists
-          scan_overview=$(echo "$scan_data" | jq -r '.scan_overview.["application/vnd.security.vulnerability.report; version=1.1"] // null')
+          scan_overview=$(echo "$scan_data" | jq -r '.scan_overview["application/vnd.security.vulnerability.report; version=1.1"] // null')
           
           if [ "$scan_overview" = "null" ]; then
             echo "⚠️ No vulnerability scan data available"
@@ -233,12 +233,12 @@ jobs:
             echo "scan_status=No Data" >> $GITHUB_OUTPUT
           else
             # Extract vulnerability counts
-            critical=$(echo "$scan_data" | jq -r '.scan_overview.["application/vnd.security.vulnerability.report; version=1.1"].summary.critical // 0')
-            high=$(echo "$scan_data" | jq -r '.scan_overview.["application/vnd.security.vulnerability.report; version=1.1"].summary.high // 0')
-            medium=$(echo "$scan_data" | jq -r '.scan_overview.["application/vnd.security.vulnerability.report; version=1.1"].summary.medium // 0')
-            low=$(echo "$scan_data" | jq -r '.scan_overview.["application/vnd.security.vulnerability.report; version=1.1"].summary.low // 0')
-            total=$(echo "$scan_data" | jq -r '.scan_overview.["application/vnd.security.vulnerability.report; version=1.1"].summary.total // 0')
-            scan_status=$(echo "$scan_data" | jq -r '.scan_overview.["application/vnd.security.vulnerability.report; version=1.1"].scan_status // "Unknown"')
+            critical=$(echo "$scan_data" | jq -r '.scan_overview["application/vnd.security.vulnerability.report; version=1.1"].summary.critical // 0')
+            high=$(echo "$scan_data" | jq -r '.scan_overview["application/vnd.security.vulnerability.report; version=1.1"].summary.high // 0')
+            medium=$(echo "$scan_data" | jq -r '.scan_overview["application/vnd.security.vulnerability.report; version=1.1"].summary.medium // 0')
+            low=$(echo "$scan_data" | jq -r '.scan_overview["application/vnd.security.vulnerability.report; version=1.1"].summary.low // 0')
+            total=$(echo "$scan_data" | jq -r '.scan_overview["application/vnd.security.vulnerability.report; version=1.1"].summary.total // 0')
+            scan_status=$(echo "$scan_data" | jq -r '.scan_overview["application/vnd.security.vulnerability.report; version=1.1"].scan_status // "Unknown"')
             
             # Output results
             echo "critical=$critical" >> $GITHUB_OUTPUT
