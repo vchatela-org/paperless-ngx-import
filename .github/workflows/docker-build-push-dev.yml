@@ -151,12 +151,21 @@ jobs:
               -u "${HARBOR_USERNAME}:${HARBOR_PASSWORD}" \
               "$ARTIFACTS_API_URL")
             
+            # Check if we got valid JSON response
+            if ! echo "$scan_data" | jq . >/dev/null 2>&1; then
+              echo "⚠️ Invalid JSON response from Harbor API"
+              echo "Response: $scan_data"
+              sleep 10
+              attempt=$((attempt + 1))
+              continue
+            fi
+            
             # Extract scan status from the response
-            scan_status=$(echo "$scan_data" | jq -r '.scan_overview["application/vnd.security.vulnerability.report; version=1.1"].scan_status // "Not Available"' 2>/dev/null)
+            scan_status=$(echo "$scan_data" | jq -r '.scan_overview["application/vnd.security.vulnerability.report; version=1.1"].scan_status // "Not Available"' 2>/dev/null || echo "Not Available")
             
             # If that fails, try alternative paths
             if [ "$scan_status" = "Not Available" ] || [ -z "$scan_status" ]; then
-              scan_status=$(echo "$scan_data" | jq -r '.scan_overview | to_entries[] | select(.key | contains("vulnerability")) | .value.scan_status // "Not Available"' 2>/dev/null)
+              scan_status=$(echo "$scan_data" | jq -r '.scan_overview | to_entries[] | select(.key | contains("vulnerability")) | .value.scan_status // "Not Available"' 2>/dev/null || echo "Not Available")
             fi
             
             echo "Scan status: $scan_status (attempt $((attempt + 1))/$max_attempts)"
@@ -275,12 +284,19 @@ jobs:
             -u "${HARBOR_USERNAME}:${HARBOR_PASSWORD}" \
             "$ARTIFACTS_API_URL")
           
+          # Check if we got valid JSON response
+          if ! echo "$scan_data" | jq . >/dev/null 2>&1; then
+            echo "⚠️ Invalid JSON response from Harbor API"
+            echo "Response: $scan_data"
+            exit 0  # Don't fail the workflow for log retrieval issues
+          fi
+          
           # Extract report_id from scan_overview
-          report_id=$(echo "$scan_data" | jq -r '.scan_overview["application/vnd.security.vulnerability.report; version=1.1"].report_id // null' 2>/dev/null)
+          report_id=$(echo "$scan_data" | jq -r '.scan_overview["application/vnd.security.vulnerability.report; version=1.1"].report_id // null' 2>/dev/null || echo "null")
           
           # If that fails, try alternative paths
           if [ "$report_id" = "null" ] || [ -z "$report_id" ]; then
-            report_id=$(echo "$scan_data" | jq -r '.scan_overview | to_entries[] | select(.key | contains("vulnerability")) | .value.report_id // null' 2>/dev/null)
+            report_id=$(echo "$scan_data" | jq -r '.scan_overview | to_entries[] | select(.key | contains("vulnerability")) | .value.report_id // null' 2>/dev/null || echo "null")
           fi
           
           if [ "$report_id" != "null" ] && [ -n "$report_id" ]; then
@@ -291,24 +307,32 @@ jobs:
             
             echo "Retrieving scan logs from: $SCAN_LOG_URL"
             
-            # Get scan logs
-            scan_logs=$(curl -s \
+            # Get scan logs with error handling
+            scan_logs=$(curl -s -w "HTTP_STATUS:%{http_code}" \
               -u "${HARBOR_USERNAME}:${HARBOR_PASSWORD}" \
-              "$SCAN_LOG_URL")
+              "$SCAN_LOG_URL" 2>/dev/null || echo "")
             
-            if [ -n "$scan_logs" ]; then
-              echo "📋 Vulnerability Scan Logs:"
-              echo "$scan_logs"
+            # Extract HTTP status and body
+            if echo "$scan_logs" | grep -q "HTTP_STATUS:"; then
+              http_status=$(echo "$scan_logs" | grep -o "HTTP_STATUS:[0-9]*" | cut -d: -f2)
+              log_content=$(echo "$scan_logs" | sed 's/HTTP_STATUS:[0-9]*$//')
               
-              # Add logs to step summary
-              echo "" >> $GITHUB_STEP_SUMMARY
-              echo "## 📋 Scan Logs" >> $GITHUB_STEP_SUMMARY
-              echo "" >> $GITHUB_STEP_SUMMARY
-              echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-              echo "$scan_logs" >> $GITHUB_STEP_SUMMARY
-              echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+              if [ "$http_status" = "200" ] && [ -n "$log_content" ]; then
+                echo "📋 Vulnerability Scan Logs:"
+                echo "$log_content"
+                
+                # Add logs to step summary
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo "## 📋 Scan Logs" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+                echo "$log_content" >> $GITHUB_STEP_SUMMARY
+                echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+              else
+                echo "⚠️ Scan logs not available yet (HTTP $http_status)"
+              fi
             else
-              echo "⚠️ No scan logs available"
+              echo "⚠️ Unable to retrieve scan logs"
             fi
           else
             echo "⚠️ Could not find scan report ID in scan overview"
