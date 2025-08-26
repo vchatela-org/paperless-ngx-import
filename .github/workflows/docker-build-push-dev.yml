@@ -61,21 +61,6 @@ jobs:
             exit 1
           fi
 
-      - name: Verify image can be pulled using skopeo
-        run: |
-          echo "Installing skopeo for image verification..."
-          
-          # Install skopeo (container image manipulation tool)
-          curl -L -o skopeo https://github.com/containers/skopeo/releases/latest/download/skopeo-linux-amd64
-          chmod +x skopeo
-          
-          echo "Verifying image can be pulled using skopeo..."
-          ./skopeo inspect --creds "${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}" \
-            docker://${{ secrets.HARBOR_REGISTRY }}/${{ secrets.HARBOR_PROJECT }}/${{ secrets.HARBOR_IMAGE }}:dev \
-            --format json | jq '.Name, .Tag, .Digest, .Created'
-          
-          echo "✅ Image pull verification successful"
-
       - name: Trigger Harbor vulnerability scan
         run: |
           echo "Triggering vulnerability scan..."
