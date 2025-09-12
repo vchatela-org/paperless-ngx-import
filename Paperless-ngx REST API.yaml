@@ -780,7 +780,7 @@ paths:
   /api/documents/:
     get:
       operationId: documents_list
-      description: Pass a user object to serializer
+      description: Document views including search
       parameters:
       - in: query
         name: added__date__gt
@@ -1186,6 +1186,11 @@ paths:
         description: Number of results to return per page.
         schema:
           type: integer
+      - in: query
+        name: query
+        schema:
+          type: string
+        description: Advanced search query string
       - name: search
         required: false
         in: query
@@ -3838,6 +3843,11 @@ paths:
           * `STARTED` - STARTED
           * `SUCCESS` - SUCCESS
       - in: query
+        name: task_id
+        schema:
+          type: string
+        description: Filter tasks by Celery UUID
+      - in: query
         name: task_name
         schema:
           type: string
@@ -3894,6 +3904,11 @@ paths:
           type: integer
         description: A unique integer value identifying this paperless task.
         required: true
+      - in: query
+        name: task_id
+        schema:
+          type: string
+        description: Filter tasks by Celery UUID
       tags:
       - tasks
       security:
@@ -3911,6 +3926,12 @@ paths:
     post:
       operationId: acknowledge_tasks
       description: Acknowledge a list of tasks
+      parameters:
+      - in: query
+        name: task_id
+        schema:
+          type: string
+        description: Filter tasks by Celery UUID
       tags:
       - tasks
       requestBody:
@@ -3941,6 +3962,12 @@ paths:
   /api/tasks/run/:
     post:
       operationId: tasks_run_create
+      parameters:
+      - in: query
+        name: task_id
+        schema:
+          type: string
+        description: Filter tasks by Celery UUID
       tags:
       - tasks
       requestBody:
@@ -6563,6 +6590,7 @@ components:
       - merge
       - split
       - delete_pages
+      - edit_pdf
       type: string
       description: |-
         * `set_correspondent` - set_correspondent
@@ -6579,6 +6607,7 @@ components:
         * `merge` - merge
         * `split` - split
         * `delete_pages` - delete_pages
+        * `edit_pdf` - edit_pdf
     MigrationStatus:
       type: object
       properties:
@@ -6704,6 +6733,8 @@ components:
         all:
           type: array
           example: '[1, 2, 3]'
+          items:
+            type: integer
     PaginatedCustomFieldList:
       type: object
       required:
@@ -6730,6 +6761,8 @@ components:
         all:
           type: array
           example: '[1, 2, 3]'
+          items:
+            type: integer
     PaginatedDocumentList:
       type: object
       required:
@@ -6756,6 +6789,8 @@ components:
         all:
           type: array
           example: '[1, 2, 3]'
+          items:
+            type: integer
     PaginatedDocumentTypeList:
       type: object
       required:
@@ -6782,6 +6817,8 @@ components:
         all:
           type: array
           example: '[1, 2, 3]'
+          items:
+            type: integer
     PaginatedGroupList:
       type: object
       required:
@@ -6808,6 +6845,8 @@ components:
         all:
           type: array
           example: '[1, 2, 3]'
+          items:
+            type: integer
     PaginatedLogEntryList:
       type: object
       required:
@@ -6834,6 +6873,8 @@ components:
         all:
           type: array
           example: '[1, 2, 3]'
+          items:
+            type: integer
     PaginatedMailAccountList:
       type: object
       required:
@@ -6860,6 +6901,8 @@ components:
         all:
           type: array
           example: '[1, 2, 3]'
+          items:
+            type: integer
     PaginatedMailRuleList:
       type: object
       required:
@@ -6886,6 +6929,8 @@ components:
         all:
           type: array
           example: '[1, 2, 3]'
+          items:
+            type: integer
     PaginatedNotesList:
       type: object
       required:
@@ -6912,6 +6957,8 @@ components:
         all:
           type: array
           example: '[1, 2, 3]'
+          items:
+            type: integer
     PaginatedSavedViewList:
       type: object
       required:
@@ -6938,6 +6985,8 @@ components:
         all:
           type: array
           example: '[1, 2, 3]'
+          items:
+            type: integer
     PaginatedShareLinkList:
       type: object
       required:
@@ -6964,6 +7013,8 @@ components:
         all:
           type: array
           example: '[1, 2, 3]'
+          items:
+            type: integer
     PaginatedStoragePathList:
       type: object
       required:
@@ -6990,6 +7041,8 @@ components:
         all:
           type: array
           example: '[1, 2, 3]'
+          items:
+            type: integer
     PaginatedTagList:
       type: object
       required:
@@ -7016,6 +7069,8 @@ components:
         all:
           type: array
           example: '[1, 2, 3]'
+          items:
+            type: integer
     PaginatedUserList:
       type: object
       required:
@@ -7042,6 +7097,8 @@ components:
         all:
           type: array
           example: '[1, 2, 3]'
+          items:
+            type: integer
     PaginatedWorkflowActionList:
       type: object
       required:
@@ -7068,6 +7125,8 @@ components:
         all:
           type: array
           example: '[1, 2, 3]'
+          items:
+            type: integer
     PaginatedWorkflowList:
       type: object
       required:
@@ -7094,6 +7153,8 @@ components:
         all:
           type: array
           example: '[1, 2, 3]'
+          items:
+            type: integer
     PaginatedWorkflowTriggerList:
       type: object
       required:
@@ -7120,6 +7181,8 @@ components:
         all:
           type: array
           example: '[1, 2, 3]'
+          items:
+            type: integer
     PaperlessAuthToken:
       type: object
       properties:
