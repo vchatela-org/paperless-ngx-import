@@ -333,19 +333,25 @@ def get_task_details(task_id):
         return None
 
 def delete_task(task_id):
-    """Delete a specific task by its ID"""
+    """Acknowledge (effectively delete) a specific task by its ID"""
     try:
-        response = requests.delete(f"{BASE_API_URL}/tasks/{task_id}/", headers=HEADERS, timeout=10)
+        url = f"{BASE_API_URL}/api/tasks/acknowledge/"
+        payload = {"tasks": [int(task_id)]}  # API expects an array of integers
+        headers = {**HEADERS, "Content-Type": "application/json"}
+
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+
         if response.status_code in [200, 204]:
-            log_message(f"Successfully deleted task: {task_id}")
+            log_message(f"Successfully acknowledged task: {task_id}")
             return True
         else:
-            log_message(f"Failed to delete task {task_id}: HTTP {response.status_code}", "WARNING")
+            log_message(f"Failed to acknowledge task {task_id}: HTTP {response.status_code}", "WARNING")
             log_message(f"Response: {response.text}")
             return False
     except requests.exceptions.RequestException as e:
-        log_message(f"Network error deleting task {task_id}: {e}", "WARNING")
+        log_message(f"Network error acknowledging task {task_id}: {e}", "WARNING")
         return False
+
 
 def clear_all_tasks():
     """Clear all tasks from the queue"""
