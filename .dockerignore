@@ -1,0 +1,22 @@
+# Keep the build context minimal: nothing here should ever reach an image layer.
+.git
+.github
+.gitignore
+.dockerignore
+.env
+.env.*
+.idea/
+.vscode/
+.venv/
+.venv-docker-vm/
+__pycache__/
+*.py[cod]
+logs/
+*.log
+docker-compose.yml
+docker-compose.override.yml
+build-and-push.sh
+README.md
+SECURITY.md
+LICENSE
+Paperless-ngx REST API.yaml

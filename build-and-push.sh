@@ -1,11 +1,12 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
 # Paperless Import Docker Build and Push Script
 # This script builds the Docker image and pushes it to your private registry
 
 # Configuration - Update these variables for your setup
-REGISTRY_URL="registry.example.com"
-PROJECT_NAME="homelab"  # Public project name
+REGISTRY_URL="${REGISTRY_URL:-registry.example.com}"
+PROJECT_NAME="${REGISTRY_PROJECT:-paperless-ngx-import}"
 IMAGE_NAME="paperless-import"
 IMAGE_TAG=${1:-latest}
 FULL_IMAGE_NAME="${REGISTRY_URL}/${PROJECT_NAME}/${IMAGE_NAME}:${IMAGE_TAG}"

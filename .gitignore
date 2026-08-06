@@ -9,6 +9,8 @@ logs/
 
 # Docker
 .env
+.env.*
+!.env.example
 docker-compose.override.yml
 
 

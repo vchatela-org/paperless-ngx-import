@@ -1,32 +1,43 @@
-version: '3.8'
-
 services:
   paperless-import:
-    # Build locally or use Harbor image
+    # Build locally or use your own registry image
     # build: .
-    image: registry.example.com/import-paperless-ngx/paperless-import:latest
+    image: registry.example.com/paperless-ngx-import/paperless-import:latest
     container_name: paperless-import
+
+    # Secrets come from the environment (or a gitignored .env file), never from
+    # this committed file. Both are required and the container refuses to start
+    # without them.
     environment:
-      # Required: Paperless API configuration
-      PAPERLESS_API_URL: "https://paperless.example.com/api"
-      PAPERLESS_API_TOKEN: "your-api-token-here"
-      
+      PAPERLESS_API_URL: "${PAPERLESS_API_URL:?set PAPERLESS_API_URL, e.g. https://paperless.example.com/api}"
+      PAPERLESS_API_TOKEN: "${PAPERLESS_API_TOKEN:?set PAPERLESS_API_TOKEN}"
+
       # Directory configuration
       WATCH_DIR: "/mnt/documents"
-      
+
       # Optional: Customize ignored patterns
       IGNORED_PATHS: "/mnt/"
       IGNORED_FOLDERS: "#recycle,@eaDir"
       IGNORED_EXTENSIONS: ".url,.pkpass,.xlsx,.xls,.html,.htm,.ini,.lnk,.exe,.msi,.bat,.cmd,.doc,.docx"
-      
+
       # Optional: Log retention
       LOG_RETENTION_DAYS: "30"
-      
+
     volumes:
-      # Mount your document directory (NFS mount point)
+      # Mount your document directory read-only (NFS mount point)
       - /path/to/your/documents:/mnt/documents:ro
-      
+
       # Optional: Persist logs
       - ./logs:/app/logs
-      
+
+    # Runtime hardening: the job only reads documents and talks to the Paperless
+    # API, so it needs no privileges, no capabilities and no writable rootfs.
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
     restart: "no"  # For CronJob use, we don't want auto-restart

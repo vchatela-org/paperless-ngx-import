@@ -1,234 +1,135 @@
 # Paperless-NGX Import
 
-A set of scripts and containerized jobs to automatically import documents into **Paperless-NGX**, handling **deduplication, tagging, logging, and queue monitoring**.  
-Supports **local execution, Docker, and Kubernetes CronJobs** with **Vault + Harbor integration**.
+A containerized job that bulk-imports documents into **Paperless-NGX**, with **deduplication, folder-derived tagging, logging and task-queue monitoring**.
+
+Designed to run as a Kubernetes CronJob (or a one-shot `docker run` / `docker compose`) against a read-only document share.
 
 ---
 
 ## Features
 
-- 🔄 Automatic deduplication & tagging from folder structure  
-- 🔐 Secure API token retrieval via HashiCorp Vault  
-- 📂 NFS storage support for documents and logs  
-- 🐳 Containerized with Kubernetes CronJob support  
-- 📊 Detailed logging & stuck-task detection  
-- ✅ Harbor registry integration for image hosting  
+- 🔄 Deduplication by checksum, with filename fallback
+- 🏷️ Automatic tag creation from the folder structure
+- 📂 Read-only document mount (NFS or local)
+- 🐳 Non-root, read-only-rootfs container
+- 📊 Detailed logging, stuck-task detection and queue draining
+- 🔐 Secrets supplied purely via environment (Vault, sealed secrets, `.env` — your choice)
 
 ---
 
-## 1. Local Script Setup
+## Configuration
 
-### Prerequisites
-- Python virtual environment (`~/paperless-venv`)  
-- Dependencies:
-  - `hvac` (Vault client)
-  - `requests` (HTTP library)
-- Access to Paperless-NGX API + Vault
+All configuration is read from environment variables.
 
-### Install
-```bash
-~/paperless-venv/bin/pip install -r requirements.txt
-````
+| Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `PAPERLESS_API_URL` | ✅ | — | Base API URL, e.g. `https://paperless.example.com/api`. Must be `https`. |
+| `PAPERLESS_API_TOKEN` | ✅ | — | Paperless-NGX API token. |
+| `WATCH_DIR` | | `/mnt/documents` | Directory tree to scan. |
+| `IGNORED_PATHS` | | `/mnt/` | Path prefixes stripped before deriving tags. |
+| `IGNORED_FOLDERS` | | `#recycle,@eaDir` | Folder names to skip entirely. |
+| `IGNORED_EXTENSIONS` | | see below | File extensions to skip. |
+| `LOG_RETENTION_DAYS` | | `30` | Age at which old log files are deleted. |
+| `PAPERLESS_ALLOW_INSECURE_HTTP` | | unset | Set to `true` to permit a plaintext `http://` API URL on a trusted network. |
 
-### Run
+Default ignored extensions: `.url .pkpass .xlsx .xls .html .htm .ini .lnk .exe .msi .bat .cmd .doc .docx .db .mp4 .zip .log`
 
-```bash
-cd "/mnt/z/tools/Docker Apps/Paperless-ngx"
-~/paperless-venv/bin/python import_to_paperless.py
-```
-
-### Script Workflow
-
-1. Retrieves API token from Vault
-2. Scans watch directory
-3. Deduplicates by checksum + filename
-4. Creates tags based on folder structure
-5. Uploads documents
-6. Monitors task queue
-
-### Task Queue Status
-
-* **Active**: `PENDING`, `RECEIVED`, `STARTED`, `RETRY`
-* **Completed**: `SUCCESS`, `FAILURE`, `REVOKED`
-
-Utilities:
-
-```bash
-~/paperless-venv/bin/python check_tasks.py
-~/paperless-venv/bin/python -c "from import_to_paperless import acknowledge_completed_tasks; acknowledge_completed_tasks()"
-```
-
-### Host-Specific Watch Paths
-
-* **Valentin-PC**: `/mnt/z/factures/`
-* **docker-vm**: `/mnt/factures/`
-* **default**: Valentin-PC
-
-Ignored: `#recycle`, `@eaDir`, `.url`, `.pkpass`, `.xlsx`, `.xls`, `.html`, `.ini`, `.lnk`, `.exe`, `.msi`, `.bat`, `.cmd`
+> The API token is sent on every request, so the script refuses a non-`https`
+> `PAPERLESS_API_URL` unless you explicitly opt out. The token is also redacted
+> from anything written to stdout or the log files.
 
 ---
 
-## 2. Docker & Kubernetes Setup
+## Running
 
-### Build Image
-
-```bash
-./build-and-push.sh
-```
-
-### Run Locally
+### Docker
 
 ```bash
 docker run --rm \
   -e PAPERLESS_API_URL="https://paperless.example.com/api" \
-  -e PAPERLESS_API_TOKEN="your-token" \
+  -e PAPERLESS_API_TOKEN="$PAPERLESS_API_TOKEN" \
   -v /path/to/documents:/mnt/documents:ro \
-  -v ./logs:/app/logs \
-  your-registry.com/paperless-import:latest
+  -v "$PWD/logs:/app/logs" \
+  --read-only --tmpfs /tmp \
+  --cap-drop ALL --security-opt no-new-privileges \
+  registry.example.com/paperless-ngx-import/paperless-import:latest
 ```
 
-### Kubernetes Deployment
+### Docker Compose
+
+Put your secrets in a gitignored `.env`, then:
 
 ```bash
-kubectl create namespace paperless
-kubectl apply -f k8s-cronjob.yaml
+docker compose up
 ```
 
-Edit `k8s-cronjob.yaml` to:
+### Kubernetes
 
-* Use your Harbor image
-* Update NFS mounts for `/mnt/documents` + `/app/logs`
-* Configure schedule (default: hourly)
+Run the image as a `CronJob` with:
 
-### Logs & Monitoring
+- the document share mounted read-only at `/mnt/documents`
+- `PAPERLESS_API_TOKEN` injected from your secret store
+- `securityContext`: `runAsNonRoot: true`, `readOnlyRootFilesystem: true`, `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]`
+
+### Building locally
 
 ```bash
-kubectl get cronjobs -n paperless
-kubectl get jobs -n paperless
-kubectl logs -n paperless job/paperless-import-<job-id>
+REGISTRY_URL=registry.example.com ./build-and-push.sh [tag]
 ```
 
 ---
 
-## 3. Vault Setup (Kubernetes)
+## How it works
 
-### Store Token
+1. Walks `WATCH_DIR`, newest files first
+2. Skips ignored folders and extensions
+3. Skips documents already in Paperless (MD5 checksum, then exact filename)
+4. Derives tags from the parent folder names, creating any that are missing
+5. Uploads the remaining documents and records their task IDs
+6. Acknowledges completed tasks, then waits for the queue to drain
 
-```bash
-vault kv put scripts-kv/paperless-ngx syno_import_api="your-api-token"
-```
+Task queue states — **active**: `PENDING`, `RECEIVED`, `STARTED`, `RETRY`; **terminal**: `SUCCESS`, `FAILURE`, `REVOKED`.
 
-### Policy (`paperless-import-policy.hcl`)
+Tasks stuck for more than 5 minutes trigger a one-time queue clear. Waiting is capped at one hour overall.
 
-```hcl
-path "scripts-kv/data/paperless-ngx" { capabilities = ["read"] }
-path "scripts-kv/metadata/paperless-ngx" { capabilities = ["read"] }
-```
+---
 
-```bash
-vault policy write paperless-import paperless-import-policy.hcl
-```
+## Dependencies
 
-### Kubernetes Auth
+`requirements.txt` is fully pinned with hashes and installed with `pip --require-hashes`. To change a dependency, edit `requirements.in` and regenerate:
 
 ```bash
-vault auth enable kubernetes
-vault write auth/kubernetes/config \
-  token_reviewer_jwt="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
-  kubernetes_host="https://kubernetes.default.svc.cluster.local:443" \
-  kubernetes_ca_cert=@/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-```
-
-### Vault Role
-
-```bash
-vault write auth/kubernetes/role/paperless-import \
-    bound_service_account_names=paperless-import \
-    bound_service_account_namespaces=paperless \
-    policies=paperless-import \
-    ttl=24h
-```
-
-### Test Integration
-
-```bash
-kubectl apply -f vault-test-pod.yaml
-kubectl exec vault-test -n paperless -- cat /vault/secrets/env
-kubectl delete pod vault-test -n paperless
-```
-
-Vault secret structure:
-
-```json
-{ "syno_import_api": "your-api-token" }
-```
-
-Injected as:
-
-```bash
-export PAPERLESS_API_TOKEN="${syno_import_api}"
+uv pip compile requirements.in --generate-hashes --python-version 3.14 --output-file requirements.txt
 ```
 
 ---
 
-## 4. Harbor Setup
+## Logging & exit codes
 
-### Create Project
+Logs go to `stdout` (for cluster log collection) and to `/app/logs/paperless_import_YYYYMMDD.log`, pruned per `LOG_RETENTION_DAYS`.
 
-* URL: `https://registry.example.com/`
-* Project: `import-paperless-ngx` (Public, with vuln scanning)
-* Registry: `registry.example.com/import-paperless-ngx`
-
-### Login & Push
-
-```bash
-docker login registry.example.com
-./build-and-push.sh
-```
-
-Image URL:
-
-```
-registry.example.com/import-paperless-ngx/paperless-import:latest
-```
-
-### Kubernetes Pull
-
-✅ Public projects: no `imagePullSecrets` needed
-🔒 For private projects: use Harbor robot accounts
+| Exit code | Meaning |
+| --- | --- |
+| `0` | Success |
+| `1` | Completed with recoverable errors (e.g. some uploads failed) |
+| `2` | Critical error (bad configuration, missing watch directory) |
 
 ---
 
-## 5. Logging & Exit Codes
+## Troubleshooting
 
-* Logs → `stdout` + `/app/logs/paperless_import_YYYYMMDD.log`
-* Auto-rotated with `LOG_RETENTION_DAYS` (default 30)
-
-Exit codes:
-
-* `0` → success
-* `1` → partial errors
-* `2` → critical errors
+- **`Configuration error: PAPERLESS_API_URL must use https`** → use an `https` URL, or set `PAPERLESS_ALLOW_INSECURE_HTTP=true` on a trusted network
+- **API failures** → verify `PAPERLESS_API_URL` (it must include `/api`) and the token
+- **No files found** → check the volume mount and `WATCH_DIR`
+- **Permission issues** → the container runs as a non-root system user; the document mount must be readable by it
 
 ---
 
-## 6. Troubleshooting
+## Security
 
-* **API failures** → check `PAPERLESS_API_URL` + token
-* **No files** → check NFS + `WATCH_DIR`
-* **Permission issues** → container UID = `1000`
-* **Vault failures** → check agent sidecar logs & policies
-* **Harbor pull issues** → test with `docker pull` or `kubectl run test-pull`
+Vulnerability reports: see [SECURITY.md](SECURITY.md). This repository has CodeQL
+code scanning, secret scanning with push protection, and Dependabot enabled.
 
----
+## License
 
-## 7. Security Best Practices
-
-* Vault policy = least privilege
-* Namespace isolation (`paperless`)
-* Vault token TTL = 24h
-* Prefer Harbor **robot accounts** for K8s pulls
-* Enable Harbor vulnerability scanning
-* Use TLS verification in production
-
----
+[MIT](LICENSE)

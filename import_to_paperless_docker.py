@@ -8,7 +8,15 @@ import requests
 import hashlib
 import glob
 import logging
-from logging.handlers import RotatingFileHandler
+from urllib.parse import urlparse
+
+# Every outbound call gets a timeout: without one, a hung Paperless instance
+# would block this job forever (it runs as a CronJob with no external watchdog).
+REQUEST_TIMEOUT = 30
+# Document uploads stream file bodies, so they get a longer allowance.
+UPLOAD_TIMEOUT = 300
+# Upper bound on how long we wait for the Paperless task queue to drain.
+QUEUE_WAIT_TIMEOUT = 3600
 
 # ----------------------------
 # Container Configuration via Environment Variables
@@ -24,14 +32,25 @@ def get_container_config():
         "IGNORED_EXTENSIONS": os.getenv("IGNORED_EXTENSIONS", ".url,.pkpass,.xlsx,.xls,.html,.htm,.ini,.lnk,.exe,.msi,.bat,.cmd,.doc,.docx,.db,.mp4,.zip,.log").split(","),
         "LOG_RETENTION_DAYS": int(os.getenv("LOG_RETENTION_DAYS", "30"))
     }
-    
+
     # Validate required configuration
     required_configs = ["PAPERLESS_API_URL", "PAPERLESS_API_TOKEN"]
     missing_configs = [key for key in required_configs if not config[key]]
-    
+
     if missing_configs:
         raise ValueError(f"Missing required environment variables: {missing_configs}")
-    
+
+    # The API token is attached to every request, so refuse to ship it over
+    # cleartext unless the operator has explicitly opted in for a trusted LAN.
+    config["PAPERLESS_API_URL"] = config["PAPERLESS_API_URL"].rstrip("/")
+    scheme = urlparse(config["PAPERLESS_API_URL"]).scheme
+    allow_insecure = os.getenv("PAPERLESS_ALLOW_INSECURE_HTTP", "").lower() in ("1", "true", "yes")
+    if scheme != "https" and not allow_insecure:
+        raise ValueError(
+            f"PAPERLESS_API_URL must use https (got '{scheme or 'none'}' scheme); "
+            "set PAPERLESS_ALLOW_INSECURE_HTTP=true to override on a trusted network"
+        )
+
     return config
 
 # Load configuration
@@ -44,6 +63,7 @@ except ValueError as e:
 # Set configuration variables
 WATCH_DIR = config["WATCH_DIR"]
 BASE_API_URL = config["PAPERLESS_API_URL"]
+PAPERLESS_API_TOKEN = config["PAPERLESS_API_TOKEN"]
 IGNORED_FOLDERS = [folder.strip() for folder in config["IGNORED_FOLDERS"] if folder.strip()]
 IGNORED_EXTENSIONS = [ext.strip() for ext in config["IGNORED_EXTENSIONS"] if ext.strip()]
 IGNORED_PATHS = [path.strip() for path in config["IGNORED_PATHS"] if path.strip()]
@@ -67,9 +87,20 @@ def setup_logging():
     # Clean up old log files
     cleanup_old_logs(log_dir)
     
+    file_handler = logging.FileHandler(log_path, encoding='utf-8')
+
+    # Log files can contain document filenames, so keep them owner-readable only.
+    # Best-effort: the log directory is often a bind mount this user does not own,
+    # and tightening permissions is not worth failing the whole run over.
+    for target, mode in ((log_dir, 0o700), (log_path, 0o600)):
+        try:
+            os.chmod(target, mode)
+        except OSError as e:
+            print(f"Warning: could not restrict permissions on {target}: {e}")
+
     # Configure logging - in containers, also log to stdout
     handlers = [
-        logging.FileHandler(log_path, encoding='utf-8'),
+        file_handler,
         logging.StreamHandler(sys.stdout)  # For Kubernetes logging
     ]
     
@@ -103,17 +134,27 @@ logger = None
 has_errors = False
 has_critical_errors = False
 
+def redact(message):
+    """Strip the API token from anything headed for a log sink.
+
+    Logs go to stdout (collected cluster-wide) and to disk, so a token echoed
+    back in an error body or a formatted URL must never survive to either.
+    """
+    if PAPERLESS_API_TOKEN:
+        message = message.replace(PAPERLESS_API_TOKEN, "***REDACTED***")
+    return message
+
 def log_message(message, level="INFO"):
     """Print messages with a timestamp and log to file."""
     global has_errors, has_critical_errors
-    
+
     if level == "ERROR":
         has_errors = True
     elif level == "CRITICAL":
         has_critical_errors = True
-    
+
     # Clean message for file logging (remove emojis for container logs)
-    clean_message = message
+    clean_message = redact(message)
     emojis_to_remove = ["❌", "⚠️", "✅", "📨", "📄", "🔍", "⏳", "📊", "🚫", "⏭️", "📁", "🧹", "ℹ️", "🚀"]
     for emoji in emojis_to_remove:
         clean_message = clean_message.replace(emoji, "").strip()
@@ -130,10 +171,8 @@ def log_message(message, level="INFO"):
             logger.info(clean_message)
 
 # ----------------------------
-# Initialize API Token and Headers
+# Initialize API Headers
 # ----------------------------
-PAPERLESS_API_TOKEN = config["PAPERLESS_API_TOKEN"]
-
 HEADERS = {
     "Authorization": f"Token {PAPERLESS_API_TOKEN}",
     "Accept": "application/json"
@@ -143,8 +182,13 @@ HEADERS = {
 # Function to Calculate File Checksum
 # ----------------------------
 def calculate_file_checksum(file_path):
-    """Calculate MD5 checksum of a file."""
-    hash_md5 = hashlib.md5()
+    """Calculate MD5 checksum of a file.
+
+    MD5 is not a security control here: Paperless-ngx stores document checksums
+    as MD5, so we must match its algorithm to query for duplicates. Flagged
+    accordingly so scanners and FIPS-enabled hosts do not treat it as crypto.
+    """
+    hash_md5 = hashlib.md5(usedforsecurity=False)
     try:
         with open(file_path, "rb") as f:
             for chunk in iter(lambda: f.read(4096), b""):
@@ -169,7 +213,7 @@ def document_exists(file_path):
     # Check by checksum first (most reliable) - limit to 1 result for efficiency
     params = {"checksum__iexact": checksum, "page_size": 1}
     try:
-        response = requests.get(f"{BASE_API_URL}/documents/", headers=HEADERS, params=params, timeout=10)
+        response = requests.get(f"{BASE_API_URL}/documents/", headers=HEADERS, params=params, timeout=REQUEST_TIMEOUT)
         
         if response.status_code == 200:
             data = response.json()
@@ -185,7 +229,7 @@ def document_exists(file_path):
     # Fallback: check by exact filename - limit to 1 result for efficiency  
     params = {"original_filename__iexact": filename, "page_size": 1}
     try:
-        response = requests.get(f"{BASE_API_URL}/documents/", headers=HEADERS, params=params, timeout=10)
+        response = requests.get(f"{BASE_API_URL}/documents/", headers=HEADERS, params=params, timeout=REQUEST_TIMEOUT)
         
         if response.status_code == 200:
             data = response.json()
@@ -209,7 +253,7 @@ def get_existing_tags():
     url = f"{BASE_API_URL}/tags/"
 
     while url:
-        response = requests.get(url, headers=HEADERS)
+        response = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
 
         if response.status_code == 200:
             try:
@@ -243,7 +287,7 @@ def create_tag(tag_name, existing_tags):
     if existing_tag_id:
         return existing_tag_id
 
-    response = requests.post(f"{BASE_API_URL}/tags/", headers=HEADERS, json={"name": tag_name})
+    response = requests.post(f"{BASE_API_URL}/tags/", headers=HEADERS, json={"name": tag_name}, timeout=REQUEST_TIMEOUT)
 
     if response.status_code in [200, 201]:
         tag_id = response.json()["id"]
@@ -296,7 +340,7 @@ def upload_document(file_path, existing_tags):
             data = {"title": os.path.basename(file_path), "tags": tag_ids}
             files = {"document": file}
 
-            response = requests.post(f"{BASE_API_URL}/documents/post_document/", headers=HEADERS, data=data, files=files)
+            response = requests.post(f"{BASE_API_URL}/documents/post_document/", headers=HEADERS, data=data, files=files, timeout=UPLOAD_TIMEOUT)
 
             if response.status_code == 200:
                 task_id = response.text.strip().replace('"', '')
@@ -322,7 +366,7 @@ def upload_document(file_path, existing_tags):
 def get_task_details(task_id):
     """Get detailed information about a specific task"""
     try:
-        response = requests.get(f"{BASE_API_URL}/tasks/{task_id}/", headers=HEADERS, timeout=10)
+        response = requests.get(f"{BASE_API_URL}/tasks/{task_id}/", headers=HEADERS, timeout=REQUEST_TIMEOUT)
         if response.status_code == 200:
             return response.json()
         else:
@@ -335,11 +379,11 @@ def get_task_details(task_id):
 def delete_task(task_id):
     """Acknowledge (effectively delete) a specific task by its ID"""
     try:
-        url = f"{BASE_API_URL}/api/tasks/acknowledge/"
+        url = f"{BASE_API_URL}/tasks/acknowledge/"
         payload = {"tasks": [int(task_id)]}  # API expects an array of integers
         headers = {**HEADERS, "Content-Type": "application/json"}
 
-        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        response = requests.post(url, json=payload, headers=headers, timeout=REQUEST_TIMEOUT)
 
         if response.status_code in [200, 204]:
             log_message(f"Successfully acknowledged task: {task_id}")
@@ -357,7 +401,7 @@ def clear_all_tasks():
     """Clear all tasks from the queue"""
     try:
         log_message("🧹 Clearing all tasks from the queue due to stuck tasks...", "WARNING")
-        response = requests.get(f"{BASE_API_URL}/tasks/", headers=HEADERS, timeout=10)
+        response = requests.get(f"{BASE_API_URL}/tasks/", headers=HEADERS, timeout=REQUEST_TIMEOUT)
         if response.status_code == 200:
             tasks = response.json()
             task_ids_to_delete = [task.get("id") for task in tasks if task.get("id")]
@@ -392,7 +436,7 @@ def clear_all_tasks():
 def acknowledge_completed_tasks():
     """Acknowledge all completed tasks to clean up the queue"""
     try:
-        response = requests.get(f"{BASE_API_URL}/tasks/", headers=HEADERS)
+        response = requests.get(f"{BASE_API_URL}/tasks/", headers=HEADERS, timeout=REQUEST_TIMEOUT)
         if response.status_code == 200:
             tasks = response.json()
             completed_task_ids = [
@@ -405,7 +449,8 @@ def acknowledge_completed_tasks():
                 ack_response = requests.post(
                     f"{BASE_API_URL}/tasks/acknowledge/", 
                     headers=HEADERS, 
-                    json={"tasks": completed_task_ids}
+                    json={"tasks": completed_task_ids},
+                    timeout=REQUEST_TIMEOUT
                 )
                 if ack_response.status_code == 200:
                     log_message(f"Successfully acknowledged {len(completed_task_ids)} completed tasks")
@@ -423,9 +468,18 @@ def wait_for_queue_to_clear():
     stuck_task_threshold = 300  # If a task stays the same for 300 seconds (5 minutes), consider it stuck
     task_stuck_timer = {}
     queue_cleared_due_to_stuck_tasks = False
+    # Hard deadline so an unreachable or permanently wedged queue cannot pin this
+    # job open indefinitely.
+    deadline = time.time() + QUEUE_WAIT_TIMEOUT
 
-    while True:
-        response = requests.get(f"{BASE_API_URL}/tasks/", headers=HEADERS)
+    while time.time() < deadline:
+        try:
+            response = requests.get(f"{BASE_API_URL}/tasks/", headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        except requests.exceptions.RequestException as e:
+            log_message(f"Network error polling task queue: {e}", "WARNING")
+            time.sleep(5)
+            continue
+
         if response.status_code == 200:
             tasks = response.json()
             # Based on the API spec, these are the active statuses that should be waited for
@@ -479,9 +533,17 @@ def wait_for_queue_to_clear():
                     log_message("✅ Task queue is now empty after clearing stuck tasks.")
                 else:
                     log_message("✅ Task queue is now empty. Proceeding with final status check.")
-                break
+                return
+        else:
+            log_message(f"Error polling task queue: HTTP {response.status_code}", "WARNING")
 
         time.sleep(5)
+
+    log_message(
+        f"Gave up waiting for the task queue after {QUEUE_WAIT_TIMEOUT}s; "
+        "some documents may still be processing",
+        "ERROR",
+    )
 
 # ----------------------------
 # Main Execution

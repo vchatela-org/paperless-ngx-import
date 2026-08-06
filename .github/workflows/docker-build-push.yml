@@ -6,6 +6,10 @@ on:
     tags: [ 'v*' ]
   workflow_dispatch:
 
+# Least privilege by default; the reusable workflow requests what it needs.
+permissions:
+  contents: read
+
 jobs:
   docker-build-push-scan:
     uses: vchatela-org/shared-workflows/.github/workflows/docker-build-push-harbor.yml@main
@@ -20,4 +24,3 @@ jobs:
     secrets:
       harbor_username: ${{ secrets.HARBOR_USERNAME }}
       harbor_password: ${{ secrets.HARBOR_PASSWORD }}
-
