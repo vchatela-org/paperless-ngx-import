@@ -9,6 +9,7 @@ on:
     # Daily, so newly disclosed CVEs in the pinned base image surface without a
     # commit to trigger them.
     - cron: '41 5 * * *'
+  workflow_dispatch:
 
 permissions: {}
 
