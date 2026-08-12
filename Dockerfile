@@ -2,7 +2,7 @@
 # unfixed CVEs (perl-base alone accounts for 4 criticals on slim-trixie with no
 # fix available upstream). Pinned to a stable release + digest so builds are
 # reproducible and Dependabot can propose updates deterministically.
-FROM python:3.14.7-alpine@sha256:f2186fc449b8f7aa5897b542777427a21dc77864f271cf4d1646361cf681c2b9 AS builder
+FROM python:3.15.0rc1-alpine@sha256:4b4340819382ffdbc0d87233b441daf617eec784e43458f8f5cb4d5e3b7d1838 AS builder
 
 WORKDIR /app
 
@@ -13,7 +13,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --require-hashes --prefix=/install -r requirements.txt
 
 
-FROM python:3.14.7-alpine@sha256:f2186fc449b8f7aa5897b542777427a21dc77864f271cf4d1646361cf681c2b9
+FROM python:3.15.0rc1-alpine@sha256:4b4340819382ffdbc0d87233b441daf617eec784e43458f8f5cb4d5e3b7d1838
 
 WORKDIR /app
 
