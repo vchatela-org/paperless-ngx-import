@@ -55,7 +55,7 @@ All configuration is read from environment variables.
 | `LOG_RETENTION_DAYS` | | `30` | Age at which old log files are deleted. |
 | `PAPERLESS_ALLOW_INSECURE_HTTP` | | unset | Set to `true` to permit a plaintext `http://` API URL on a trusted network. |
 
-Default ignored extensions: `.url .pkpass .xlsx .xls .html .htm .ini .lnk .exe .msi .bat .cmd .doc .docx .db .mp4 .zip .log`
+Default ignored extensions: `.url .pkpass .xlsx .xls .html .htm .ini .lnk .exe .msi .bat .cmd .doc .docx .db .mp4 .zip .log .pag .dir .apk .lic`
 
 ### Rate limiting and resilience
 

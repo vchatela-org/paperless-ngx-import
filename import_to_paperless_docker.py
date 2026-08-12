@@ -94,7 +94,9 @@ def get_container_config():
         "PAPERLESS_API_TOKEN": os.getenv("PAPERLESS_API_TOKEN"),
         "IGNORED_PATHS": os.getenv("IGNORED_PATHS", "/mnt/").split(","),
         "IGNORED_FOLDERS": os.getenv("IGNORED_FOLDERS", "#recycle,@eaDir").split(","),
-        "IGNORED_EXTENSIONS": os.getenv("IGNORED_EXTENSIONS", ".url,.pkpass,.xlsx,.xls,.html,.htm,.ini,.lnk,.exe,.msi,.bat,.cmd,.doc,.docx,.db,.mp4,.zip,.log").split(","),
+        # .pag/.dir are Synology index sidecars: Paperless rejects them as
+        # empty/unsupported, so filtering them here saves the round-trip.
+        "IGNORED_EXTENSIONS": os.getenv("IGNORED_EXTENSIONS", ".url,.pkpass,.xlsx,.xls,.html,.htm,.ini,.lnk,.exe,.msi,.bat,.cmd,.doc,.docx,.db,.mp4,.zip,.log,.pag,.dir,.apk,.lic").split(","),
         "LOG_RETENTION_DAYS": _env_int("LOG_RETENTION_DAYS", 30, minimum=1),
 
         # Preflight

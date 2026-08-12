@@ -18,7 +18,7 @@ services:
       # Optional: Customize ignored patterns
       IGNORED_PATHS: "/mnt/"
       IGNORED_FOLDERS: "#recycle,@eaDir"
-      IGNORED_EXTENSIONS: ".url,.pkpass,.xlsx,.xls,.html,.htm,.ini,.lnk,.exe,.msi,.bat,.cmd,.doc,.docx"
+      IGNORED_EXTENSIONS: ".url,.pkpass,.xlsx,.xls,.html,.htm,.ini,.lnk,.exe,.msi,.bat,.cmd,.doc,.docx,.db,.mp4,.zip,.log,.pag,.dir,.apk,.lic"
 
       # Optional: Log retention
       LOG_RETENTION_DAYS: "30"
