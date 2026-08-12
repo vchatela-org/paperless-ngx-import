@@ -29,7 +29,7 @@ its lane:
 | --- | --- |
 | **Preflight** (`GET /api/status/`) | Walking the whole tree and failing every upload when Paperless is down. One request, then `exit 0`. |
 | **Circuit breaker** | Grinding for 70 minutes against a dead backend. Aborts after N consecutive connection errors or 5xx. |
-| **Backpressure** | Dumping thousands of OCR tasks onto a 4-core node. Pauses whenever the task queue exceeds `QUEUE_DEPTH_LIMIT`. |
+| **Backpressure** | Dumping thousands of OCR tasks onto a 4-core node. Pauses whenever the task queue exceeds `QUEUE_DEPTH_LIMIT`. Needs a token that may read `/api/tasks/`. |
 | **Per-run cap + pacing** | A first-time or post-outage catch-up landing in one burst. |
 | **Local state file** | Re-submitting everything after an outage, because API-based dedup returned "0 already exist". |
 
@@ -65,7 +65,7 @@ Defaults are tuned for a small homelab (a handful of nodes, a few cores each).
 | --- | --- | --- |
 | `MAX_UPLOADS_PER_RUN` | `200` | Hard cap on submissions per run. `0` disables the cap. |
 | `UPLOAD_DELAY_SECONDS` | `5` | Pause between submissions. |
-| `QUEUE_DEPTH_LIMIT` | `25` | Pause uploads while Paperless has more than this many `PENDING`+`STARTED` tasks. |
+| `QUEUE_DEPTH_LIMIT` | `25` | Pause uploads while Paperless has more than this many `PENDING`+`STARTED` tasks. Requires read access to `/api/tasks/`. |
 | `QUEUE_POLL_INTERVAL` | `15` | Seconds between queue re-polls while paused. |
 | `QUEUE_DRAIN_TIMEOUT` | `1800` | Give up waiting for the queue after this long and end the run cleanly. |
 | `MAX_CONSECUTIVE_FAILURES` | `10` | Circuit breaker: abort after this many consecutive failed API calls. |
@@ -257,6 +257,8 @@ or burn a CronJob `backoffLimit`.
 - **`Object violates owner / name unique constraint`** → the tag already exists but was not in the listing. The importer now looks it up and reuses it; if it still logs `tag(s) unresolved`, check that the API token's user can *view* those tags
 - **`Circuit breaker tripped`** → the backend failed `MAX_CONSECUTIVE_FAILURES` calls in a row. Check Paperless, not the importer
 - **`Task queue depth N exceeds limit`** → working as intended; Paperless is busy. Raise `QUEUE_DEPTH_LIMIT` only if the cluster can take it
+- **`Backpressure is OFF for this run`** → the token got `401`/`403`/`404` from `/api/tasks/`, so `QUEUE_DEPTH_LIMIT` cannot throttle anything. The message quotes the server's reply. Either grant that user permission to view tasks, or accept the degradation and size `UPLOAD_DELAY_SECONDS` / `MAX_UPLOADS_PER_RUN` to what the cluster can absorb unattended
+- **`Could not read task queue depth`** (without the line above) → a transient failure, logged once per run; backpressure resumes on the next poll
 - **Backlog barely shrinking** → raise `MAX_UPLOADS_PER_RUN`, lower `UPLOAD_DELAY_SECONDS`, or run the CronJob more often
 - **Everything re-uploaded after an outage** → the state file is not persisted. `STATE_FILE` must live on a volume that survives the pod (the same PVC as the logs)
 - **`Could not write state file`** → the logs volume is read-only or not writable by the container user; dedup falls back to the API until fixed

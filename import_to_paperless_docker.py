@@ -179,6 +179,12 @@ QUEUE_WAIT_TIMEOUT = config["QUEUE_WAIT_TIMEOUT"]
 # Global variables
 submitted_tasks = {}
 
+# Backpressure needs to read /api/tasks/, which not every token is allowed to
+# do. Set to the server's verdict the first time it refuses, which switches
+# backpressure off for the rest of the run instead of re-asking per upload.
+tasks_endpoint_denied = None
+queue_depth_warned = False
+
 # ----------------------------
 # Logging Configuration
 # ----------------------------
@@ -903,6 +909,24 @@ def resolve_tag_ids(names, tag_cache):
 # ----------------------------
 # Backpressure
 # ----------------------------
+def note_tasks_denied(response):
+    """Record that this token may not read /api/tasks/, if that is the verdict.
+
+    A 401/403/404 there is permanent for the run: the endpoint is restricted
+    (or absent) and will not become readable between two uploads. Remembering
+    the verdict is what stops us paying two rejected calls before every single
+    document. Returns True when the response was such a verdict.
+    """
+    global tasks_endpoint_denied
+
+    if response is None or response.status_code not in (401, 403, 404):
+        return False
+
+    if tasks_endpoint_denied is None:
+        tasks_endpoint_denied = f"HTTP {response.status_code} — {summarize_body(response)}"
+    return True
+
+
 def get_queue_depth():
     """Count the consume tasks Paperless has queued or in flight.
 
@@ -911,7 +935,15 @@ def get_queue_depth():
     total = 0
     for status in QUEUE_ACTIVE_STATUSES:
         response = api_request("GET", "/tasks/", params={"status": status})
-        if response is None or response.status_code != 200:
+        if response is None:
+            return None
+        if response.status_code != 200:
+            if not note_tasks_denied(response):
+                log_message(
+                    f"GET /tasks/?status={status}: HTTP {response.status_code} — "
+                    f"{summarize_body(response)}",
+                    "WARNING",
+                )
             return None
         data = response_json(response)
         if isinstance(data, list):
@@ -930,6 +962,13 @@ def wait_for_queue_capacity():
     only ever hand the cluster more OCR work once it has retired the last
     batch. Returns False if the queue never drained within the budget.
     """
+    global queue_depth_warned
+
+    # Already established that we cannot see the queue: no point re-asking
+    # before every upload, and no point repeating the warning either.
+    if tasks_endpoint_denied is not None:
+        return True
+
     deadline = time.time() + QUEUE_DRAIN_TIMEOUT
     announced = False
 
@@ -937,7 +976,23 @@ def wait_for_queue_capacity():
         depth = get_queue_depth()
 
         if depth is None:
-            log_message("Could not read task queue depth; proceeding without backpressure", "WARNING")
+            if tasks_endpoint_denied is not None:
+                log_message(
+                    "Backpressure is OFF for this run: this API token may not read "
+                    f"/api/tasks/ ({tasks_endpoint_denied}). Uploads are paced by "
+                    f"UPLOAD_DELAY_SECONDS={UPLOAD_DELAY_SECONDS:.0f}s and "
+                    f"MAX_UPLOADS_PER_RUN={MAX_UPLOADS_PER_RUN or 'unlimited'} only — "
+                    "size those for what the cluster can absorb, or grant the token "
+                    "permission to view tasks",
+                    "WARNING",
+                )
+            elif not queue_depth_warned:
+                log_message(
+                    "Could not read task queue depth; proceeding without backpressure "
+                    "(further occurrences this run are not repeated)",
+                    "WARNING",
+                )
+                queue_depth_warned = True
             return True
 
         if depth <= QUEUE_DEPTH_LIMIT:
@@ -1040,6 +1095,7 @@ def list_tasks():
     """Fetch the current task list, normalising the paginated and plain forms."""
     response = api_request("GET", "/tasks/")
     if response is None or response.status_code != 200:
+        note_tasks_denied(response)
         log_message(f"Failed to fetch tasks: {summarize_body(response)}", "WARNING")
         return None
     data = response_json(response)
@@ -1117,6 +1173,12 @@ def wait_for_queue_to_clear():
     while time.time() < deadline:
         tasks = list_tasks()
         if tasks is None:
+            if tasks_endpoint_denied is not None:
+                log_message(
+                    "Cannot watch the queue with this token "
+                    f"({tasks_endpoint_denied}); ending the run without draining"
+                )
+                return
             time.sleep(QUEUE_POLL_INTERVAL)
             continue
 
