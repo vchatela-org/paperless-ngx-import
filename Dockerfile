@@ -28,15 +28,18 @@ COPY --from=builder /install /usr/local
 # The job needs nothing but `requests` at runtime. Removing the build tooling
 # eliminates a standing source of scanner findings (pip vendors its own copy of
 # msgpack, and setuptools trails its upstream fixes in base images).
-RUN python -m pip uninstall -y pip setuptools wheel >/dev/null 2>&1 || true \
-    && rm -rf /usr/local/lib/python3.14/site-packages/pip \
-              /usr/local/lib/python3.14/site-packages/pip-* \
-              /usr/local/lib/python3.14/site-packages/setuptools \
-              /usr/local/lib/python3.14/site-packages/setuptools-* \
-              /usr/local/lib/python3.14/site-packages/pkg_resources \
-              /usr/local/lib/python3.14/site-packages/wheel \
-              /usr/local/lib/python3.14/site-packages/wheel-* \
+# The interpreter reports its own site-packages: hardcoding python3.X here would
+# turn the cleanup into a silent no-op the next time the base image moves, and
+# the uninstall above it is best-effort, so the removal has to actually land.
+RUN SITE="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')" \
+    && { python -m pip uninstall -y pip setuptools wheel >/dev/null 2>&1 || true; } \
+    && rm -rf "$SITE"/pip "$SITE"/pip-* \
+              "$SITE"/setuptools "$SITE"/setuptools-* \
+              "$SITE"/pkg_resources \
+              "$SITE"/wheel "$SITE"/wheel-* \
               /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/pip3.* \
+    && ! python -c "import setuptools" 2>/dev/null \
+    && ! python -c "import pip" 2>/dev/null \
     && python -c "import requests; print('runtime deps OK:', requests.__version__)"
 
 # App code

@@ -71,3 +71,23 @@ jobs:
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: '1'
+
+  base-image-freshness:
+    name: Base image freshness
+    # Only on the schedule and on demand: a new upstream Python release says
+    # nothing about the branch under review, so this must never block a PR.
+    # A failing scheduled run is the notification -- GitHub mails the owner.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Compare pinned base image against newest stable
+        run: python3 .github/scripts/check_base_image_freshness.py
