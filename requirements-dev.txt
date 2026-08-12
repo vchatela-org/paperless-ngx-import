@@ -1,0 +1,5 @@
+# Test-only dependencies. Deliberately unpinned and hash-free: unlike
+# requirements.txt these never enter the runtime image, so reproducibility of
+# the container does not depend on them.
+-r requirements.in
+pytest>=8

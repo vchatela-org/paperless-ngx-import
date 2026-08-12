@@ -45,9 +45,21 @@ RETRYABLE_STATUSES = (429, 502, 503, 504)
 # Logs and state live on the same mounted volume.
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 
-STATE_VERSION = 1
+STATE_VERSION = 2
+# Versions this importer can still read. A state file it refuses to read is a
+# state file whose every entry looks new again, so old versions are migrated in
+# place rather than discarded.
+SUPPORTED_STATE_VERSIONS = (1, 2)
 # Unforced state writes are batched this many changes at a time.
 SAVE_BATCH_SIZE = 25
+
+# Paperless-ngx stores the SHA256 of the original file in
+# documents_document.checksum, so ?checksum__iexact= only ever matches a
+# SHA256. Digest lengths, in hex characters:
+CHECKSUM_HEX_LENGTH = 64
+# ...and what importer <= 1.3.3 wrote instead, having hashed with MD5. Such a
+# digest cannot match anything, on the server or in the state file.
+LEGACY_CHECKSUM_HEX_LENGTH = 32
 
 # ----------------------------
 # Container Configuration via Environment Variables
@@ -79,6 +91,17 @@ def _env_float(name, default, minimum=0.0):
     return value
 
 
+def _env_choice(name, default, allowed):
+    """Read a knob whose value must be one of a fixed set."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    value = raw.strip().lower()
+    if value not in allowed:
+        raise ValueError(f"{name} must be one of {', '.join(allowed)} (got '{raw}')")
+    return value
+
+
 def _env_bool(name, default):
     raw = os.getenv(name)
     if raw is None or not raw.strip():
@@ -98,6 +121,12 @@ def get_container_config():
         # empty/unsupported, so filtering them here saves the round-trip.
         "IGNORED_EXTENSIONS": os.getenv("IGNORED_EXTENSIONS", ".url,.pkpass,.xlsx,.xls,.html,.htm,.ini,.lnk,.exe,.msi,.bat,.cmd,.doc,.docx,.db,.mp4,.zip,.log,.pag,.dir,.apk,.lic").split(","),
         "LOG_RETENTION_DAYS": _env_int("LOG_RETENTION_DAYS", 30, minimum=1),
+
+        # Tag derivation. "legacy" reproduces the tokenizer every existing tag
+        # was created by; "clean" is the corrected one. Defaults to legacy
+        # because switching is a rename/merge of a live namespace, not a code
+        # change — see the tag migration section of the README.
+        "TAG_TOKENIZER": _env_choice("TAG_TOKENIZER", "legacy", ("legacy", "clean")),
 
         # Preflight
         "PREFLIGHT_ENABLED": _env_bool("PREFLIGHT_ENABLED", True),
@@ -164,6 +193,7 @@ IGNORED_FOLDERS = [folder.strip() for folder in config["IGNORED_FOLDERS"] if fol
 IGNORED_EXTENSIONS = [ext.strip() for ext in config["IGNORED_EXTENSIONS"] if ext.strip()]
 IGNORED_PATHS = [path.strip() for path in config["IGNORED_PATHS"] if path.strip()]
 
+TAG_TOKENIZER = config["TAG_TOKENIZER"]
 PREFLIGHT_ENABLED = config["PREFLIGHT_ENABLED"]
 MAX_CONSECUTIVE_FAILURES = config["MAX_CONSECUTIVE_FAILURES"]
 MAX_RETRIES = config["MAX_RETRIES"]
@@ -560,6 +590,7 @@ class ImportState:
         self.by_checksum = {}
         self.dirty = 0
         self.writable = True
+        self.version = STATE_VERSION
 
     def load(self):
         if not self.path:
@@ -575,15 +606,111 @@ class ImportState:
             log_message(f"Ignoring unreadable state file {self.path}: {exc}", "WARNING")
             return
 
-        if not isinstance(data, dict) or data.get("version") != STATE_VERSION:
+        version = data.get("version") if isinstance(data, dict) else None
+        if version not in SUPPORTED_STATE_VERSIONS:
             log_message(f"Ignoring state file with unexpected format: {self.path}", "WARNING")
             return
 
+        self.version = version
         entries = data.get("documents")
         if isinstance(entries, dict):
             self.entries = entries
             self._reindex()
-        log_message(f"Loaded {len(self.entries)} entries from state file")
+        log_message(f"Loaded {len(self.entries)} entries from state file (version {version})")
+
+    def migrate(self):
+        """Bring a state file written by an older importer up to date.
+
+        Two things in a v1 file are actively harmful and neither announces
+        itself, which is why this runs loudly and unconditionally:
+
+          * checksums are MD5, and an MD5 digest matches no SHA256 — every
+            moved or renamed file would look new, forever;
+          * an "already in Paperless" verdict may have come from a basename-only
+            match, and ``lookup`` short-circuits on it before any API call, so a
+            single false positive hides that document from every future run.
+
+        Recomputing costs one local pass; re-verifying costs one query per
+        affected file on this run. Both are cheap next to the alternative,
+        which is a wrong answer nobody can see.
+        """
+        # Revoke first: a revoked entry is deleted, so re-hashing it beforehand
+        # would read the file for nothing — and on this corpus every single
+        # "exists" verdict is unaudited, which would make that "nothing" the
+        # whole migration pass.
+        revoked = self._revoke_unaudited_verdicts()
+        rehashed = self._migrate_checksums()
+        if self.version != STATE_VERSION:
+            log_message(f"State file upgraded from version {self.version} to {STATE_VERSION}")
+            self.version = STATE_VERSION
+            self.dirty += 1
+        return rehashed, revoked
+
+    def _migrate_checksums(self):
+        """Recompute digests that were written by the MD5 era."""
+        legacy = [
+            path
+            for path, entry in self.entries.items()
+            if isinstance(entry, dict)
+            and isinstance(entry.get("checksum"), str)
+            and len(entry["checksum"]) == LEGACY_CHECKSUM_HEX_LENGTH
+        ]
+        if not legacy:
+            return 0
+
+        log_message(f"Recomputing {len(legacy)} legacy MD5 checksum(s) as SHA256; this reads each file once")
+        rehashed = 0
+        dropped = 0
+        for path in legacy:
+            entry = self.entries[path]
+            checksum = None
+            try:
+                # Only the recorded bytes may be re-hashed. If the file has
+                # changed size since, hashing it now would file the *new*
+                # bytes under an entry that describes the old ones — which is
+                # the same false "already handled" this migration exists to
+                # remove.
+                if os.stat(path).st_size == entry.get("size"):
+                    checksum = calculate_file_checksum(path)
+            except OSError:
+                checksum = None
+
+            if checksum:
+                entry["checksum"] = checksum
+                rehashed += 1
+            else:
+                # No digest at all is honest: the path key still dedups this
+                # file, and prune() clears the entry if it is really gone.
+                entry.pop("checksum", None)
+                dropped += 1
+
+        self._reindex()
+        self.dirty += len(legacy)
+        log_message(f"Checksum migration: {rehashed} recomputed, {dropped} dropped (file missing or changed)")
+        return rehashed
+
+    def _revoke_unaudited_verdicts(self):
+        """Forget "exists" verdicts recorded before we tracked how they were reached."""
+        unaudited = [
+            path
+            for path, entry in self.entries.items()
+            if isinstance(entry, dict)
+            and entry.get("status") == "exists"
+            and not entry.get("verified_by")
+        ]
+        if not unaudited:
+            return 0
+
+        for path in unaudited:
+            self.entries.pop(path, None)
+        self._reindex()
+        self.dirty += len(unaudited)
+        log_message(
+            f"Dropped {len(unaudited)} unaudited 'already exists' verdict(s); "
+            "these files are re-checked against Paperless by checksum this run",
+            "WARNING",
+        )
+        return len(unaudited)
 
     def _reindex(self):
         self.by_checksum = {
@@ -612,7 +739,14 @@ class ImportState:
             return None
         return self.entries.get(path)
 
-    def record(self, file_path, size, mtime, checksum, status, task_id=None):
+    def record(self, file_path, size, mtime, checksum, status, task_id=None,
+               verified_by=None, document_id=None):
+        """Persist a verdict, together with how it was reached.
+
+        ``verified_by`` is the audit trail: a skip that no future run will
+        re-examine has to say what convinced it, or a bug of this shape stays
+        invisible for 4103 documents and one production incident.
+        """
         entry = {
             "size": size,
             "mtime": mtime,
@@ -622,6 +756,10 @@ class ImportState:
         }
         if task_id:
             entry["task_id"] = task_id
+        if verified_by:
+            entry["verified_by"] = verified_by
+        if document_id is not None:
+            entry["document_id"] = document_id
         self.entries[file_path] = entry
         if checksum:
             self.by_checksum[checksum] = file_path
@@ -657,6 +795,7 @@ class ImportState:
 
         payload = {
             "version": STATE_VERSION,
+            "checksum_algorithm": "sha256",
             "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
             "documents": self.entries,
         }
@@ -686,60 +825,75 @@ class ImportState:
 # Function to Calculate File Checksum
 # ----------------------------
 def calculate_file_checksum(file_path):
-    """Calculate MD5 checksum of a file.
+    """Calculate the SHA256 checksum of a file.
 
-    MD5 is not a security control here: Paperless-ngx stores document checksums
-    as MD5, so we must match its algorithm to query for duplicates. Flagged
-    accordingly so scanners and FIPS-enabled hosts do not treat it as crypto.
+    This must be the algorithm Paperless-ngx uses, or ?checksum__iexact= is a
+    query that can never match: Paperless stores SHA256 (64 hex characters) and
+    this function used to return MD5 (32), so every existence check fell
+    through to the filename fallback and deduplication was decorative.
     """
-    hash_md5 = hashlib.md5(usedforsecurity=False)
+    digest = hashlib.sha256()
     try:
         with open(file_path, "rb") as f:
-            for chunk in iter(lambda: f.read(4096), b""):
-                hash_md5.update(chunk)
-        return hash_md5.hexdigest()
-    except Exception as e:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError as e:
         log_message(f"Error calculating checksum for {file_path}: {e}", "WARNING")
         return None
 
 # ----------------------------
 # Function to Check if Document Already Exists
 # ----------------------------
-def document_exists(file_path, checksum):
-    """Check if document already exists in Paperless-ngx by checksum and filename."""
+def find_existing_document(file_path, checksum):
+    """Return the Paperless document already holding these exact bytes, if any.
+
+    By checksum, and only by checksum. There used to be a fallback that matched
+    on ``original_filename`` alone, which in a folder-organised library is not a
+    weaker signal but a wrong one: /Amazon/HRM 200 Joel/invoice.pdf and
+    /Amazon/Poele Beka Chef/invoice.pdf are unrelated documents that share a
+    basename. It declared 33 of them already imported, and because the verdict
+    is written to the state file and short-circuits every later run, each one
+    was hidden permanently while the run reported success.
+
+    ``None`` — "go ahead and offer it" — is also the answer when the lookup
+    itself fails. That asymmetry is deliberate: a redundant upload is rejected
+    by Paperless as a duplicate and recorded as such, whereas a wrong "exists"
+    is durable and silent.
+    """
     filename = os.path.basename(file_path)
 
     if not checksum:
-        log_message(f"Could not calculate checksum for {filename}, skipping existence check", "WARNING")
-        return False
+        log_message(
+            f"Could not calculate checksum for {filename}; offering it to Paperless, "
+            "which will reject it if it is a duplicate",
+            "WARNING",
+        )
+        return None
 
-    # Check by checksum first (most reliable) - limit to 1 result for efficiency
     response = api_request(
         "GET", "/documents/", params={"checksum__iexact": checksum, "page_size": 1}
     )
-    if response is not None and response.status_code == 200:
-        data = response_json(response) or {}
-        if data.get("count", 0) > 0:
-            existing_doc = data["results"][0]
-            log_message(f"Document already exists (checksum match): {filename} -> '{existing_doc.get('title', 'Unknown')}'")
-            return True
-    elif response is not None:
-        log_message(f"Error checking document by checksum: HTTP {response.status_code}", "WARNING")
+    if response is None or response.status_code != 200:
+        if response is not None:
+            log_message(
+                f"Error checking document by checksum: HTTP {response.status_code} — "
+                f"{summarize_body(response)}",
+                "WARNING",
+            )
+        return None
 
-    # Fallback: check by exact filename - limit to 1 result for efficiency
-    response = api_request(
-        "GET", "/documents/", params={"original_filename__iexact": filename, "page_size": 1}
-    )
-    if response is not None and response.status_code == 200:
-        data = response_json(response) or {}
-        if data.get("count", 0) > 0:
-            existing_doc = data["results"][0]
-            log_message(f"Document already exists (filename match): {filename} -> '{existing_doc.get('title', 'Unknown')}'")
-            return True
-    elif response is not None:
-        log_message(f"Error checking document by filename: HTTP {response.status_code}", "WARNING")
+    data = response_json(response) or {}
+    results = data.get("results") or []
+    if data.get("count", 0) > 0 and results:
+        existing_doc = results[0]
+        log_message(
+            f"Document already exists (checksum match): {filename} -> "
+            f"'{existing_doc.get('title', 'Unknown')}' (#{existing_doc.get('id', '?')})"
+        )
+        return existing_doc
 
-    return False
+    return None
 
 # ----------------------------
 # Retrieve Existing Tags from Paperless
@@ -815,6 +969,76 @@ def get_existing_tags():
 # ----------------------------
 # Handle Document Tagging
 # ----------------------------
+def strip_outer_punctuation(token):
+    """Trim non-alphanumeric characters from both ends of a token.
+
+    Returns "" for a token with no alphanumeric character anywhere, which is
+    how "-" and "." stop becoming tags. Written by hand rather than with
+    ``str.strip(string.punctuation)`` so that non-ASCII punctuation — « », —,
+    the typographic quotes a Synology share is full of — is trimmed too.
+    """
+    start, end = 0, len(token)
+    while start < end and not token[start].isalnum():
+        start += 1
+    while end > start and not token[end - 1].isalnum():
+        end -= 1
+    return token[start:end]
+
+
+def tokenize_folder(folder, tokenizer=None):
+    """Split one folder name into tag names, per the configured tokenizer.
+
+    Legacy splits on whitespace and keeps whatever falls out, which is how a
+    folder named "Pharmatop (7 Cantons)" produced the tags "(7" and "cantons)",
+    and why "-" and "p" are real tags on this corpus. Clean trims punctuation
+    and drops anything that is not a word.
+    """
+    tokenizer = TAG_TOKENIZER if tokenizer is None else tokenizer
+    tokens = []
+    for raw in folder.split():
+        token = raw.lower().strip()
+        if tokenizer == "clean":
+            token = strip_outer_punctuation(token)
+            # One character is never a useful tag and is usually debris from a
+            # split ("A. Dupont" -> "a"), so it goes with the punctuation.
+            if len(token) < 2:
+                continue
+        # Paperless caps tag names at 128 characters.
+        if token and len(token) <= 128:
+            tokens.append(token)
+    return tokens
+
+
+def strip_watch_dir(normalized_path):
+    """Reduce an absolute path to the part below the watch directory.
+
+    Only the tree *below* WATCH_DIR describes a document; the watch directory's
+    own components describe the deployment. Legacy stripped IGNORED_PATHS
+    instead — "/mnt/" by default — which left the "documents" of the default
+    /mnt/documents as a component, and so tagged every single file "documents".
+
+    Returns ``None`` when the path is not under the watch directory, leaving
+    the caller to fall back to the IGNORED_PATHS behaviour.
+    """
+    watch_root = os.path.normpath(WATCH_DIR)
+    if watch_root in ("", os.sep):
+        return None
+    if normalized_path == watch_root:
+        return ""
+    if normalized_path.startswith(watch_root + os.sep):
+        return normalized_path[len(watch_root):]
+    return None
+
+
+def strip_ignored_paths(normalized_path):
+    """Strip the first matching IGNORED_PATHS prefix (the legacy behaviour)."""
+    for ignored in IGNORED_PATHS:
+        prefix = os.path.normpath(ignored)
+        if normalized_path.startswith(prefix):
+            return normalized_path[len(prefix):]
+    return normalized_path
+
+
 def tag_names_from_path(file_path):
     """Derive tag names from the folder structure. Pure — makes no API calls.
 
@@ -824,26 +1048,43 @@ def tag_names_from_path(file_path):
     """
     normalized_path = os.path.normpath(file_path)
 
-    for ignored in IGNORED_PATHS:
-        if normalized_path.startswith(os.path.normpath(ignored)):
-            normalized_path = normalized_path[len(os.path.normpath(ignored)):]
-            break
+    relative_path = None
+    if TAG_TOKENIZER == "clean":
+        relative_path = strip_watch_dir(normalized_path)
+    if relative_path is None:
+        relative_path = strip_ignored_paths(normalized_path)
 
-    parent_directory = os.path.dirname(normalized_path)
+    parent_directory = os.path.dirname(relative_path)
+    ignored_folders = [ignored.lower() for ignored in IGNORED_FOLDERS]
     names = []
 
     for folder in parent_directory.split(os.sep):
         folder = folder.strip()
-        if not folder or folder.lower() in [ignored.lower() for ignored in IGNORED_FOLDERS]:
+        if not folder or folder.lower() in ignored_folders:
             continue
 
-        for sub_tag in folder.split():
-            sub_tag = sub_tag.lower().strip()
-            # Paperless caps tag names at 128 characters.
-            if sub_tag and len(sub_tag) <= 128 and sub_tag not in names:
+        for sub_tag in tokenize_folder(folder):
+            if sub_tag not in names:
                 names.append(sub_tag)
 
     return names
+
+
+def junk_tag_names(names):
+    """Pick out the tag names the clean tokenizer would not have produced.
+
+    Used only to report what staying on the legacy tokenizer is still costing;
+    it changes nothing on its own.
+    """
+    watch_components = {
+        component.lower()
+        for component in os.path.normpath(WATCH_DIR).split(os.sep)
+        if component
+    }
+    return sorted(
+        name for name in names
+        if tokenize_folder(name, tokenizer="clean") != [name] or name in watch_components
+    )
 
 
 def lookup_tag(name):
@@ -1301,13 +1542,23 @@ def select_candidates(all_files, state, counters):
             # Same bytes under a new name or path: already handled.
             entry = state.lookup_checksum(checksum)
             if entry is not None:
-                state.record(file_path, size, mtime, checksum, entry.get("status", "submitted"))
+                state.record(
+                    file_path, size, mtime, checksum,
+                    entry.get("status", "submitted"),
+                    verified_by="state-checksum",
+                    document_id=entry.get("document_id"),
+                )
                 counters["skipped_state"] += 1
                 continue
 
         # Only now is it worth asking Paperless.
-        if document_exists(file_path, checksum):
-            state.record(file_path, size, mtime, checksum, "exists")
+        existing = find_existing_document(file_path, checksum)
+        if existing is not None:
+            state.record(
+                file_path, size, mtime, checksum, "exists",
+                verified_by="api-checksum",
+                document_id=existing.get("id"),
+            )
             counters["skipped_existing"] += 1
             state.save()
             continue
@@ -1319,9 +1570,34 @@ def select_candidates(all_files, state, counters):
 # ----------------------------
 # Main Execution
 # ----------------------------
+def report_legacy_tag_tokens(names):
+    """Say once per run what the legacy tokenizer is still producing.
+
+    Switching tokenizer is not a code decision: "documents" and "-" are on
+    hundreds of live documents, so flipping the default would strand a
+    namespace nobody asked to abandon. Naming the damage each run is the part
+    that can be done safely.
+    """
+    if TAG_TOKENIZER != "legacy":
+        return
+
+    junk = junk_tag_names(names)
+    if not junk:
+        return
+
+    shown = ", ".join(repr(name) for name in junk[:10]) + ("…" if len(junk) > 10 else "")
+    log_message(
+        f"Legacy tag tokenizer produced {len(junk)} name(s) the clean tokenizer would "
+        f"not: {shown}. Set TAG_TOKENIZER=clean once the existing tags have been "
+        "merged or renamed — see the tag migration section of the README",
+        "WARNING",
+    )
+
+
 def log_run_settings():
     log_message(f"Watch directory: {WATCH_DIR}")
     log_message(f"Paperless API URL: {BASE_API_URL}")
+    log_message(f"Tag tokenizer: {TAG_TOKENIZER}")
     log_message(
         "Limits: "
         f"max_uploads_per_run={MAX_UPLOADS_PER_RUN or 'unlimited'}, "
@@ -1360,6 +1636,7 @@ def main():
 
     state = ImportState(STATE_FILE)
     state.load()
+    state.migrate()
 
     counters = {
         "skipped_ignored": 0,
@@ -1407,6 +1684,7 @@ def main():
             tag_names_by_path[file_path] = names
             wanted_tags.update(names)
         if wanted_tags:
+            report_legacy_tag_tokens(wanted_tags)
             ensure_tags(wanted_tags, tag_cache)
 
         # ---- 4. Upload, paced and backpressured ----
@@ -1423,11 +1701,17 @@ def main():
             elif result is None:
                 # Permanently unacceptable to Paperless — remember it so we do
                 # not re-offer the same file every single day.
-                state.record(file_path, size, mtime, checksum, "rejected")
+                state.record(
+                    file_path, size, mtime, checksum, "rejected",
+                    verified_by="api-rejected",
+                )
                 counters["skipped_api_issues"] += 1
             else:
                 task_id = result if isinstance(result, str) else None
-                state.record(file_path, size, mtime, checksum, "submitted", task_id=task_id)
+                state.record(
+                    file_path, size, mtime, checksum, "submitted",
+                    task_id=task_id, verified_by="uploaded",
+                )
                 uploaded_count += 1
                 # Flush immediately: if this run is killed mid-way, the next one
                 # must not re-submit what we have already handed over.

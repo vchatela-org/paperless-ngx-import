@@ -16,6 +16,10 @@ logs/
 docker-compose.yml
 docker-compose.override.yml
 build-and-push.sh
+tests/
+pytest.ini
+.pytest_cache/
+requirements-dev.txt
 README.md
 SECURITY.md
 LICENSE
