@@ -30,8 +30,14 @@ updates:
     # Stay on the current Python minor line. Left unconstrained, Dependabot
     # offers release candidates (it proposed 3.15.0rc1-alpine while 3.14.7 was
     # still the newest stable), which trades a supported runtime for an
-    # untested one without fixing any CVE. Patch releases inside the line carry
-    # the security fixes; moving to the next minor is a deliberate, manual bump.
+    # untested one without fixing any CVE. Dependabot's `versions` field takes
+    # Bundler ranges rather than globs for the docker ecosystem, so there is no
+    # way to say "stable only" -- blocking minors is the only lever available.
+    #
+    # The cost is that Dependabot goes quiet when the next minor ships for
+    # real (3.15.0 final is due 2026-10-01 per PEP 790). The base-image-freshness
+    # job in security-scan.yml covers that gap: it runs daily and fails once a
+    # newer *stable* tag exists, which is the cue to bump tag + digest by hand.
     ignore:
       - dependency-name: python
         update-types:
