@@ -253,6 +253,8 @@ or burn a CronJob `backoffLimit`.
 - **No files found** → check the volume mount and `WATCH_DIR`
 - **Permission issues** → the container runs as a non-root system user; the document mount must be readable by it
 - **`Paperless is not reachable or not healthy; nothing to do`** → expected while the stack is scaled down; the run exits `0` and the next one resumes
+- **`Could not read the existing tags`** → the tag listing came back short or failed mid-pagination. The run aborts on purpose (exit `2`): with a partial tag cache every document would be uploaded with tags missing
+- **`Object violates owner / name unique constraint`** → the tag already exists but was not in the listing. The importer now looks it up and reuses it; if it still logs `tag(s) unresolved`, check that the API token's user can *view* those tags
 - **`Circuit breaker tripped`** → the backend failed `MAX_CONSECUTIVE_FAILURES` calls in a row. Check Paperless, not the importer
 - **`Task queue depth N exceeds limit`** → working as intended; Paperless is busy. Raise `QUEUE_DEPTH_LIMIT` only if the cluster can take it
 - **Backlog barely shrinking** → raise `MAX_UPLOADS_PER_RUN`, lower `UPLOAD_DELAY_SECONDS`, or run the CronJob more often

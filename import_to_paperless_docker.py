@@ -736,9 +736,42 @@ def document_exists(file_path, checksum):
 # ----------------------------
 # Retrieve Existing Tags from Paperless
 # ----------------------------
+def next_page_path(next_url):
+    """Reduce a paginated ``next`` URL to a path this script can request again.
+
+    Django builds that URL from whatever scheme and host the reverse proxy
+    advertised, which need not match PAPERLESS_API_URL character for character
+    (http vs https, internal vs external hostname). Comparing the whole prefix
+    therefore drops pages on the floor; only the path below the API root is
+    meaningful.
+    """
+    if not next_url:
+        return None
+
+    base_path = urlparse(BASE_API_URL).path.rstrip("/")
+    parsed = urlparse(next_url)
+    path = parsed.path
+
+    if base_path:
+        if not path.startswith(base_path):
+            log_message(f"Unexpected pagination URL '{next_url}'", "WARNING")
+            return None
+        path = path[len(base_path):]
+
+    return f"{path}?{parsed.query}" if parsed.query else path
+
+
 def get_existing_tags():
-    """Retrieve all existing tags from Paperless-NGX, handling pagination."""
+    """Retrieve all existing tags from Paperless-NGX, handling pagination.
+
+    Returns ``None`` if the listing could not be read in full. A partial cache
+    is worse than no cache: every unseen tag looks like a missing one, so the
+    run re-creates it (which the server rejects on the name unique constraint)
+    and then uploads documents with that tag silently dropped.
+    """
     all_tags = {}
+    seen = 0
+    expected = None
     path = "/tags/"
     params = {"page_size": 100}
 
@@ -748,18 +781,25 @@ def get_existing_tags():
 
         if response is None or response.status_code != 200:
             log_message(f"Failed to fetch tags: {summarize_body(response)}", "ERROR")
-            break
+            return None
 
         data = response_json(response)
         if data is None:
-            break
+            return None
 
-        for tag in data.get("results", []):
+        if expected is None:
+            expected = data.get("count")
+
+        results = data.get("results", [])
+        seen += len(results)
+        for tag in results:
             all_tags[tag["name"].lower()] = tag["id"]
 
-        # `next` is an absolute URL; reduce it back to an API-relative path.
-        next_url = data.get("next")
-        path = next_url[len(BASE_API_URL):] if next_url and next_url.startswith(BASE_API_URL) else None
+        path = next_page_path(data.get("next"))
+
+    if expected is not None and seen < expected:
+        log_message(f"Tag listing truncated: read {seen} of {expected} tag(s)", "ERROR")
+        return None
 
     log_message(f"Retrieved {len(all_tags)} tags from Paperless-NGX.")
     return all_tags
@@ -798,6 +838,19 @@ def tag_names_from_path(file_path):
     return names
 
 
+def lookup_tag(name):
+    """Ask the server for one tag by name, returning its id or ``None``."""
+    response = api_request("GET", "/tags/", params={"name__iexact": name, "page_size": 100})
+    if response is None or response.status_code != 200:
+        return None
+
+    data = response_json(response) or {}
+    for tag in data.get("results", []):
+        if tag.get("name", "").lower() == name.lower():
+            return tag.get("id")
+    return None
+
+
 def ensure_tags(names, tag_cache):
     """Create every missing tag once per run, before any upload.
 
@@ -811,6 +864,8 @@ def ensure_tags(names, tag_cache):
 
     log_message(f"Creating {len(missing)} missing tag(s)")
     created = 0
+    adopted = 0
+    unresolved = []
     for name in missing:
         response = api_request("POST", "/tags/", json={"name": name})
         if response is not None and response.status_code in (200, 201):
@@ -819,9 +874,26 @@ def ensure_tags(names, tag_cache):
                 tag_cache[name] = data["id"]
                 created += 1
                 continue
+
+        # A rejected creation is usually the name unique constraint: the tag
+        # exists but was absent from the listing we cached. Adopt the server's
+        # copy rather than dropping the tag from every document that wants it.
+        existing_id = lookup_tag(name) if response is not None and response.status_code == 400 else None
+        if existing_id is not None:
+            tag_cache[name] = existing_id
+            adopted += 1
+            continue
+
+        unresolved.append(name)
         log_message(f"Failed to create tag '{name}': {summarize_body(response)}", "WARNING")
 
-    log_message(f"Created {created}/{len(missing)} tag(s)")
+    log_message(f"Created {created}/{len(missing)} tag(s), adopted {adopted} already-existing")
+    if unresolved:
+        shown = ", ".join(unresolved[:10]) + ("…" if len(unresolved) > 10 else "")
+        log_message(
+            f"{len(unresolved)} tag(s) unresolved; documents will be uploaded without them: {shown}",
+            "ERROR",
+        )
 
 
 def resolve_tag_ids(names, tag_cache):
@@ -1242,6 +1314,11 @@ def main():
 
     try:
         tag_cache = get_existing_tags()
+        if tag_cache is None:
+            # Uploading now would tag nothing correctly and pointlessly retry
+            # creating tags that already exist; the next run picks this up.
+            log_message("Could not read the existing tags — aborting before any upload", "CRITICAL")
+            return 2
 
         if has_critical_errors:
             log_message("Critical errors encountered during initialization", "CRITICAL")
