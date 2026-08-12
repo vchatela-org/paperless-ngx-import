@@ -17,8 +17,11 @@ FROM python:3.14.7-alpine@sha256:f2186fc449b8f7aa5897b542777427a21dc77864f271cf4
 
 WORKDIR /app
 
-# Apply OS security updates
-RUN apk --no-cache upgrade
+# Apply OS security updates. curl comes along for the ride: CronJob wrappers
+# and readiness probes reach for it, and its absence used to be swallowed as a
+# silent "run anyway" instead of a failed precondition.
+RUN apk --no-cache upgrade \
+    && apk add --no-cache curl
 
 COPY --from=builder /install /usr/local
 

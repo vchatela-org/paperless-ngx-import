@@ -23,6 +23,21 @@ services:
       # Optional: Log retention
       LOG_RETENTION_DAYS: "30"
 
+      # Rate limiting for a small backend. These are the defaults, spelled out
+      # so they are easy to tune from a CronJob ConfigMap.
+      MAX_UPLOADS_PER_RUN: "200"      # per-run cap; catch-up spreads over days
+      UPLOAD_DELAY_SECONDS: "5"       # pause between submissions
+      QUEUE_DEPTH_LIMIT: "25"         # pause while Paperless has this many tasks pending
+      QUEUE_POLL_INTERVAL: "15"       # how often to re-check the queue while paused
+      QUEUE_DRAIN_TIMEOUT: "1800"     # give up waiting for the queue after this long
+      MAX_CONSECUTIVE_FAILURES: "10"  # circuit breaker
+      MAX_RETRIES: "4"                # retries per request on 429/503/5xx
+      RETRY_BACKOFF_SECONDS: "5"      # initial backoff, doubled each retry
+      PREFLIGHT_ENABLED: "true"       # exit 0 early when Paperless is down
+
+      # Local state: survives outages, so dedup never depends on the API.
+      STATE_FILE: "/app/logs/import_state.json"
+
     volumes:
       # Mount your document directory read-only (NFS mount point)
       - /path/to/your/documents:/mnt/documents:ro
