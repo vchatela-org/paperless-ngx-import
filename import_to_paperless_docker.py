@@ -434,6 +434,37 @@ def response_json(response):
 # ----------------------------
 # Preflight
 # ----------------------------
+def preflight_probe():
+    """Confirm the token works against an endpoint every user may read.
+
+    Used when /api/status/ is unusable. It gives no health detail, only the
+    reachable/authenticated distinction, which is all the caller needs to
+    decide between "keep going" and "come back later".
+    """
+    try:
+        response = api_request("GET", "/ui_settings/", retries=1)
+    except CircuitBreakerOpen as exc:
+        log_message(f"Preflight probe failed: {exc}", "WARNING")
+        return "unavailable"
+    finally:
+        breaker.reset()
+
+    if response is None:
+        return "unavailable"
+
+    if response.status_code in (401, 403):
+        return "unauthorized"
+
+    if response.status_code != 200:
+        log_message(
+            f"Preflight probe: HTTP {response.status_code} — {summarize_body(response)}",
+            "WARNING",
+        )
+        return "unavailable"
+
+    return "ok"
+
+
 def preflight_check():
     """Ask Paperless once whether it is up, before touching the file tree.
 
@@ -454,8 +485,15 @@ def preflight_check():
     if response is None:
         return "unavailable"
 
-    if response.status_code in (401, 403):
+    if response.status_code == 401:
         return "unauthorized"
+
+    if response.status_code == 403:
+        # /api/status/ is superuser-only. A perfectly good import token gets a
+        # 403 here, so this says nothing about the token — re-ask somewhere any
+        # authenticated user may look before condemning it.
+        log_message("/api/status/ is not readable by this token; probing /api/ui_settings/ instead")
+        return preflight_probe()
 
     if response.status_code == 404:
         # /api/status/ arrived in Paperless 2.x. On anything older, reaching the
@@ -1175,7 +1213,7 @@ def main():
     if PREFLIGHT_ENABLED:
         status = preflight_check()
         if status == "unauthorized":
-            log_message("Paperless rejected our API token (HTTP 401/403)", "CRITICAL")
+            log_message("Paperless rejected our API token", "CRITICAL")
             return 2
         if status != "ok":
             log_message(

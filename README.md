@@ -72,7 +72,7 @@ Defaults are tuned for a small homelab (a handful of nodes, a few cores each).
 | `MAX_RETRIES` | `4` | Retries per request on `429`/`5xx` and connection errors. |
 | `RETRY_BACKOFF_SECONDS` | `5` | Initial retry backoff; doubles each attempt. |
 | `RETRY_MAX_DELAY_SECONDS` | `120` | Ceiling for backoff and for a server-supplied `Retry-After`. |
-| `PREFLIGHT_ENABLED` | `true` | Check `GET /api/status/` before doing any work. |
+| `PREFLIGHT_ENABLED` | `true` | Check the API is up and the token works before doing any work. |
 | `STATE_FILE` | `/app/logs/import_state.json` | Local record of what has been imported. |
 | `WAIT_FOR_QUEUE_ON_FINISH` | `false` | Block at the end of the run until the queue drains (see below). |
 | `QUEUE_WAIT_TIMEOUT` | `3600` | Cap on that end-of-run wait. |
@@ -161,7 +161,10 @@ REGISTRY_URL=registry.example.com ./build-and-push.sh [tag]
 
 1. **Preflight** — `GET /api/status/`. If Paperless is unreachable, or reports an
    unhealthy database/Redis/Celery, the run logs it and exits `0` without
-   touching the filesystem. A bad token exits `2`.
+   touching the filesystem. A bad token exits `2`. `/api/status/` is
+   superuser-only, so a `403` there is not a verdict on the token: the run
+   falls back to `GET /api/ui_settings/`, which any authenticated user can
+   read, and only calls the token bad if *that* is refused too.
 2. **Walk** `WATCH_DIR`, newest files first.
 3. **Filter**, cheapest check first: ignored folders → ignored extensions →
    local state. Nothing that gets this far has cost an API call yet.
