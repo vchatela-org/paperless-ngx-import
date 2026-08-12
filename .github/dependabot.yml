@@ -27,6 +27,16 @@ updates:
     labels:
       - dependencies
       - docker
+    # Stay on the current Python minor line. Left unconstrained, Dependabot
+    # offers release candidates (it proposed 3.15.0rc1-alpine while 3.14.7 was
+    # still the newest stable), which trades a supported runtime for an
+    # untested one without fixing any CVE. Patch releases inside the line carry
+    # the security fixes; moving to the next minor is a deliberate, manual bump.
+    ignore:
+      - dependency-name: python
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
 
   # Actions used by the workflows in this repo.
   - package-ecosystem: github-actions
