@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           # Match the runtime the container ships (see Dockerfile).
           python-version: '3.14'
