@@ -40,8 +40,14 @@ jobs:
           push: false
           load: true
           tags: paperless-ngx-import:scan
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Deliberately uncached. A layer cache pins `apk upgrade` to whatever
+          # the Alpine index held the day the Dockerfile last changed, so the
+          # daily run would keep scanning a frozen image and report CVEs that a
+          # real build no longer has (CVE-2026-14456 in libcrypto3/libssl3 was
+          # fixed upstream and still failed this job from cache). The image is
+          # small and every dependency is a pure-Python wheel, so a cold build
+          # costs under a minute -- cheaper than a false alarm.
+          no-cache: true
 
       - name: Scan image (SARIF)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
