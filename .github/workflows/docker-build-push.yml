@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   docker-build-push-scan:
-    uses: vchatela-org/shared-workflows/.github/workflows/docker-build-push-harbor.yml@3c2124fcb0460d78875310ff081227e6ede80b9b # v1.0.0
+    uses: vchatela-org/shared-workflows/.github/workflows/docker-build-push-harbor.yml@caa90a006f3e941fec0f695d839bc655309151e6 # v1.0.1
     with:
       harbor_registry: ${{ vars.HARBOR_REGISTRY }}
       harbor_project: ${{ vars.HARBOR_PROJECT }}
