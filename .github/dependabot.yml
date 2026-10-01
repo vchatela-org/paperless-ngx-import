@@ -11,6 +11,12 @@ updates:
       time: "06:00"
       timezone: Europe/Paris
     open-pull-requests-limit: 5
+    # requirements.in lists only direct dependencies; urllib3, certifi, idna
+    # and charset-normalizer exist only in the compiled requirements.txt.
+    # Dependabot skips those unless told otherwise, so a urllib3 CVE fix
+    # (2.8.0) went unproposed.
+    allow:
+      - dependency-type: all
     labels:
       - dependencies
       - python
