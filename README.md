@@ -382,7 +382,9 @@ open, `chore(main): release X.Y.Z`, with the next version and its `CHANGELOG.md`
 `feat`, `fix`, `perf`, `revert` or `deps` change merged since the last release joins it, so several
 can ship together. Merge it when you want to ship: that tags `vX.Y.Z`, publishes the GitHub Release
 (the notes Renovate shows in the homelab's bump PR) and builds the image on the tag: Harbor (`vX.Y.Z` and `latest`, then the vulnerability scan).
-Don't push a tag by hand.
+Don't push a tag by hand, and don't publish a release image with `build-and-push.sh` (it is for local
+builds). A hand-made runtime change, such as a base image bump after the freshness check fails, is
+titled `deps: ...` so it makes a release; `chore(deps)` would stay out of the notes.
 
 PRs are **squash-merged**, with the PR title as the commit subject and an empty body (the merge
 dialog's prefill: keep it). The title is the PR's one line in the notes and decides the bump: `feat`
