@@ -311,7 +311,7 @@ Task queue states — **active**: `PENDING`, `RECEIVED`, `STARTED`, `RETRY`; **t
 `requirements.txt` is fully pinned with hashes and installed with `pip --require-hashes`. To change a dependency, edit `requirements.in` and regenerate:
 
 ```bash
-uv pip compile requirements.in --generate-hashes --python-version 3.14 --output-file requirements.txt
+uv pip compile requirements.in --generate-hashes --python-version 3.15 --output-file requirements.txt
 ```
 
 ---

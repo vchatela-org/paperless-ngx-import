@@ -1,6 +1,6 @@
 # Fully pinned with hashes so the container build is reproducible and
 # supply-chain tampering is caught at install time (pip --require-hashes).
-# Regenerate with: uv pip compile requirements.in --generate-hashes --python-version 3.14
+# Regenerate with: uv pip compile requirements.in --generate-hashes --python-version 3.15
 #
 certifi==2026.7.22 \
     --hash=sha256:62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775 \
