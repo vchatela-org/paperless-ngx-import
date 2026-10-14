@@ -1,4 +1,12 @@
-name: Build and Push Docker Image to Harbor
+name: Build and Push Docker Image to GHCR
+
+# The public image the cluster pulls, built on a GitHub-hosted runner so this
+# repository's code never runs on the organisation's self-hosted runners — whose
+# token can read cluster secrets, and which no longer accept public repositories.
+# Release tags publish a version; a push to main keeps `latest` and a `sha-<short>`
+# tag current, and the build is gated on Trivy.
+#
+# See vchatela-org/shared-workflows, docker-build-push-ghcr.yml.
 
 on:
   push:
@@ -6,21 +14,17 @@ on:
     tags: [ 'v*' ]
   workflow_dispatch:
 
-# Least privilege by default; the reusable workflow requests what it needs.
+# Least privilege by default; the job grants what it needs.
 permissions:
   contents: read
 
 jobs:
-  docker-build-push-scan:
-    uses: vchatela-org/shared-workflows/.github/workflows/docker-build-push-harbor.yml@f2a7a2655ba8a97678d2264a83902fdb5851c79a # v1.1.0
+  docker-build-push:
+    # Only here: a fork has neither the token nor the package.
+    if: github.repository == 'vchatela-org/paperless-ngx-import'
+    permissions:
+      contents: read
+      packages: write
+    uses: vchatela-org/shared-workflows/.github/workflows/docker-build-push-ghcr.yml@acd8755fe85c59123b7c7eace5dc6be7d93d781d # v1.3.0
     with:
-      harbor_registry: ${{ vars.HARBOR_REGISTRY }}
-      harbor_project: ${{ vars.HARBOR_PROJECT }}
-      harbor_image: ${{ vars.HARBOR_IMAGE }}
-      # runs_on: arc-runner-set          # default
-      # scan_enabled: true               # default
-      # max_critical_vulns: 0            # default
-      # max_high_vulns: 5                # default
-    secrets:
-      harbor_username: ${{ secrets.HARBOR_USERNAME }}
-      harbor_password: ${{ secrets.HARBOR_PASSWORD }}
+      image_name: paperless-ngx-import
