@@ -381,7 +381,8 @@ Releases are cut by [release-please](https://github.com/googleapis/release-pleas
 open, `chore(main): release X.Y.Z`, with the next version and its `CHANGELOG.md` entry; every
 `feat`, `fix`, `perf`, `revert` or `deps` change merged since the last release joins it, so several
 can ship together. Merge it when you want to ship: that tags `vX.Y.Z`, publishes the GitHub Release
-(the notes Renovate shows in the homelab's bump PR) and builds the image on the tag: Harbor (`vX.Y.Z` and `latest`, then the vulnerability scan).
+(the notes Renovate shows in the homelab's bump PR) and builds the image on the tag to GHCR —
+`ghcr.io/vchatela-org/paperless-ngx-import:X.Y.Z` — then gates it on a Trivy scan.
 Don't push a tag by hand, and don't publish a release image with `build-and-push.sh` (it is for local
 builds). A hand-made runtime change, such as a base image bump after the freshness check fails, is
 titled `deps: ...` so it makes a release; `chore(deps)` would stay out of the notes.
