@@ -8,6 +8,8 @@ updates:
   # regenerates the hashes along with the version bump.
   - package-ecosystem: pip
     directory: /
+    cooldown:
+      default-days: 2
     schedule:
       interval: weekly
       day: monday
@@ -30,6 +32,8 @@ updates:
   # Base image. The Dockerfile pins tag + digest; Dependabot updates both.
   - package-ecosystem: docker
     directory: /
+    cooldown:
+      default-days: 2
     schedule:
       interval: weekly
       day: monday
@@ -61,6 +65,8 @@ updates:
   # Actions used by the workflows in this repo.
   - package-ecosystem: github-actions
     directory: /
+    cooldown:
+      default-days: 2
     schedule:
       interval: weekly
       day: monday
