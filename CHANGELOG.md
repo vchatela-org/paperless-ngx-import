@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.18](https://github.com/vchatela-org/paperless-ngx-import/compare/v1.3.17...v1.3.18) (2026-11-01)
+
+
+### Dependencies
+
+* bump python base image to 3.15.2-alpine ([60ae767](https://github.com/vchatela-org/paperless-ngx-import/commit/60ae7676cfd3677baca6613341b24494f7e3eb4c))
+* bump python base image to 3.15.2-alpine ([#33](https://github.com/vchatela-org/paperless-ngx-import/issues/33)) ([cf992c1](https://github.com/vchatela-org/paperless-ngx-import/commit/cf992c17434b0efeae1317d8e60570dd5eceb75c))
+
 ## [1.3.17](https://github.com/vchatela-org/paperless-ngx-import/compare/v1.3.16...v1.3.17) (2026-10-23)
 
 
