@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.19](https://github.com/vchatela-org/paperless-ngx-import/compare/v1.3.18...v1.3.19) (2026-11-10)
+
+
+### Dependencies
+
+* bump python from `20a82db` to `a0f2e26` ([4c56903](https://github.com/vchatela-org/paperless-ngx-import/commit/4c56903d0e4cda24f6c78eda26fc38b76167c849))
+* bump python from `20a82db` to `a0f2e26` ([#37](https://github.com/vchatela-org/paperless-ngx-import/issues/37)) ([7f61de8](https://github.com/vchatela-org/paperless-ngx-import/commit/7f61de841ff7d515e5cd4f98c24ac7df963c18df))
+
 ## [1.3.18](https://github.com/vchatela-org/paperless-ngx-import/compare/v1.3.17...v1.3.18) (2026-11-01)
 
 
