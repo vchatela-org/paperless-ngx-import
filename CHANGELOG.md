@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.21](https://github.com/vchatela-org/paperless-ngx-import/compare/v1.3.20...v1.3.21) (2026-11-23)
+
+
+### Dependencies
+
+* bump certifi from 2026.10.23 to 2026.11.20 ([#44](https://github.com/vchatela-org/paperless-ngx-import/issues/44)) ([7c3051e](https://github.com/vchatela-org/paperless-ngx-import/commit/7c3051e9e5fe3e74cbcebe431150bb654b4c8a44))
+
 ## [1.3.20](https://github.com/vchatela-org/paperless-ngx-import/compare/v1.3.19...v1.3.20) (2026-11-17)
 
 
